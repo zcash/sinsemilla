@@ -14,3 +14,9 @@ repository = "https://github.com/zcash/sinsemilla"
 categories = ["cryptography"]
 
 [dependencies]
+group = "0.13"
+pasta_curves = "0.5"
+subtle = "2.3"
+
+[features]
+test-dependencies = []
