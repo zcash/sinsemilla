@@ -1,5 +1,13 @@
 //! Implementation of Sinsemilla outside the circuit.
 
+#![no_std]
+
+// We require `alloc` for now.
+#[macro_use]
+extern crate alloc;
+
+use alloc::vec::Vec;
+
 use group::{Curve, Wnaf};
 use pasta_curves::{
     arithmetic::{CurveAffine, CurveExt},
@@ -248,6 +256,8 @@ impl CommitDomain {
 
 #[cfg(test)]
 mod tests {
+    use alloc::vec::Vec;
+
     use super::{Pad, K};
     use pasta_curves::{arithmetic::CurveExt, pallas};
 

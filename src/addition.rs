@@ -1,4 +1,4 @@
-use std::ops::Add;
+use core::ops::Add;
 
 use group::{cofactor::CofactorCurveAffine, Group};
 use pasta_curves::pallas;
