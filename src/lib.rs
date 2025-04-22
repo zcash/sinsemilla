@@ -203,8 +203,17 @@ pub struct CommitDomain {
 impl CommitDomain {
     /// Constructs a new `CommitDomain` with a specific prefix string.
     pub fn new(domain: &str) -> Self {
-        let m_prefix = format!("{}-M", domain);
-        let r_prefix = format!("{}-r", domain);
+        Self::new_with_separate_domains(domain, domain)
+    }
+
+    /// Constructs a new `CommitDomain` from different values for `hash_domain` and `blind_domain`
+    /// `new_with_separate_domains` is used in the OrchardZSA note commitment, where we use the
+    /// OrchardZSA hash domain `z.cash:ZSA-NoteCommit` and reuse the Orchard blind domain
+    /// `z.cash:Orchard-NoteCommit`, as specified in
+    /// [ZIP 226](https://zips.z.cash/zip-0226#note-structure-commitment).
+    pub fn new_with_separate_domains(hash_domain: &str, blind_domain: &str) -> Self {
+        let m_prefix = format!("{}-M", hash_domain);
+        let r_prefix = format!("{}-r", blind_domain);
         let hasher_r = pallas::Point::hash_to_curve(&r_prefix);
         CommitDomain {
             M: HashDomain::new(&m_prefix),
