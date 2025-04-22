@@ -203,17 +203,15 @@ pub struct CommitDomain {
 impl CommitDomain {
     /// Constructs a new `CommitDomain` with a specific prefix string.
     pub fn new(domain: &str) -> Self {
-        let m_prefix = format!("{}-M", domain);
-        let r_prefix = format!("{}-r", domain);
-        let hasher_r = pallas::Point::hash_to_curve(&r_prefix);
-        CommitDomain {
-            M: HashDomain::new(&m_prefix),
-            R: hasher_r(&[]),
-        }
+        Self::new_with_separate_domains(domain, domain)
     }
 
     /// Constructs a new `CommitDomain` from different values for `hash_domain` and `blind_domain`
-    pub fn new_with_personalization(hash_domain: &str, blind_domain: &str) -> Self {
+    /// `new_with_separate_domains` is used in the OrchardZSA note commitment, where we use the
+    /// OrchardZSA hash domain `z.cash:ZSA-NoteCommit` and reuse the Orchard blind domain
+    /// `z.cash:Orchard-NoteCommit`, as specified in
+    /// [ZIP 226](https://zips.z.cash/zip-0226#note-structure-commitment).
+    pub fn new_with_separate_domains(hash_domain: &str, blind_domain: &str) -> Self {
         let m_prefix = format!("{}-M", hash_domain);
         let r_prefix = format!("{}-r", blind_domain);
         let hasher_r = pallas::Point::hash_to_curve(&r_prefix);
@@ -235,26 +233,6 @@ impl CommitDomain {
         // We use complete addition for the blinding factor.
         CtOption::<pallas::Point>::from(self.M.hash_to_point_inner(msg))
             .map(|p| p + Wnaf::new().scalar(r).base(self.R))
-    }
-
-    /// $\mathsf{SinsemillaHashToPoint}$ from [§ 5.4.1.9][concretesinsemillahash].
-    ///
-    /// [concretesinsemillahash]: https://zips.z.cash/protocol/nu5.pdf#concretesinsemillahash
-    pub fn hash_to_point(&self, msg: impl Iterator<Item = bool>) -> CtOption<pallas::Point> {
-        self.M.hash_to_point(msg)
-    }
-
-    /// Returns `SinsemillaCommit_r(personalization, msg) = hash_point + [r]R`
-    /// where `SinsemillaHash(personalization, msg) = hash_point`
-    /// and `R` is derived from the `personalization`.
-    #[allow(non_snake_case)]
-    pub fn commit_from_hash_point(
-        &self,
-        hash_point: CtOption<pallas::Point>,
-        r: &pallas::Scalar,
-    ) -> CtOption<pallas::Point> {
-        // We use complete addition for the blinding factor.
-        hash_point.map(|p| p + Wnaf::new().scalar(r).base(self.R))
     }
 
     /// $\mathsf{SinsemillaShortCommit}$ from [§ 5.4.8.4][concretesinsemillacommit].
@@ -289,10 +267,8 @@ impl CommitDomain {
 mod tests {
     use alloc::vec::Vec;
 
-    use super::{Pad, K, CommitDomain};
+    use super::{Pad, K};
     use pasta_curves::{arithmetic::CurveExt, pallas};
-    use ff::Field;
-    use rand::{rngs::OsRng, Rng};
 
     #[test]
     fn pad() {
@@ -351,28 +327,5 @@ mod tests {
             let actual = SINSEMILLA_S[j as usize];
             assert_eq!(computed, actual);
         }
-    }
-
-    #[test]
-    fn commit_in_several_steps() {
-
-        let domain = CommitDomain::new("z.cash:ZSA-NoteCommit");
-
-        let mut os_rng = OsRng;
-        let msg: Vec<bool> = (0..36).map(|_| os_rng.gen::<bool>()).collect();
-
-        let rcm = pallas::Scalar::random(&mut os_rng);
-
-        // Evaluate the commitment with commit function
-        let commit1 = domain.commit(msg.clone().into_iter(), &rcm);
-
-        // Evaluate the commitment with the following steps
-        // 1. hash msg
-        // 2. evaluate the commitment from the hash point
-        let hash_point = domain.M.hash_to_point(msg.into_iter());
-        let commit2 = domain.commit_from_hash_point(hash_point, &rcm);
-
-        // Test equality
-        assert_eq!(commit1.unwrap(), commit2.unwrap());
     }
 }
