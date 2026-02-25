@@ -1,0 +1,33 @@
+name: Beta lints
+
+# These lints are only informative, so we only run them directly on branches
+# and not trial-merges of PRs, to reduce noise.
+on: push
+
+jobs:
+  clippy-beta:
+    name: Clippy (beta)
+    runs-on: ubuntu-latest
+    permissions:
+      checks: write
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@beta
+        id: toolchain
+        with:
+          components: clippy
+      - run: rustup override set "${TOOLCHAIN}"
+        shell: sh
+        env:
+          TOOLCHAIN: ${{steps.toolchain.outputs.name}}
+      - name: Run Clippy (beta)
+        uses: auguwu/clippy-action@94a9ff2f6920180b89e5c03d121d0af04a9d3e03 # 1.4.0
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          check-args: >
+            --all-targets
+          args: >
+            -W clippy::all
