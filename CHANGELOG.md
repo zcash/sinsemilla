@@ -6,6 +6,9 @@ and this project adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed
+- Bumped MSRV to 1.63.0
+
 ### Added
 - `sinsemilla::CommitDomain::new_with_separate_domains`
 

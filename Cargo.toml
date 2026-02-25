@@ -7,7 +7,7 @@ authors = [
     "Ying Tong Lai",
 ]
 edition = "2021"
-rust-version = "1.60"
+rust-version = "1.63"
 description = "A collision-resistant circuit-efficient hash function"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/zcash/sinsemilla"
