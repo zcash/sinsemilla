@@ -14,9 +14,12 @@ repository = "https://github.com/zcash/sinsemilla"
 categories = ["cryptography"]
 
 [dependencies]
-group = "0.13"
+group = "=0.14.0-pre.0"
 pasta_curves = { version = "0.5", default-features = false, features = ["alloc"] }
 subtle = { version = "2.3", default-features = false }
 
 [features]
 test-dependencies = []
+
+[patch.crates-io]
+pasta_curves = { git = "https://github.com/zcash/pasta_curves.git", rev = "32152d552b1c39fb3ffab8f0d8646f946c4adecc" }
