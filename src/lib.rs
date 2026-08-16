@@ -7,8 +7,8 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
-
 use group::{Curve, Wnaf};
+use lazy_static::lazy_static;
 use pasta_curves::{
     arithmetic::{CurveAffine, CurveExt},
     pallas,
@@ -19,6 +19,13 @@ mod addition;
 use self::addition::IncompletePoint;
 mod sinsemilla_s;
 pub use sinsemilla_s::SINSEMILLA_S;
+
+lazy_static! {
+    static ref SINSEMILLA_S_AFFINE: Vec<pallas::Affine> = SINSEMILLA_S
+        .iter()
+        .map(|(x, y)| pallas::Affine::from_xy(*x, *y).unwrap())
+        .collect();
+}
 
 /// Number of bits of each message piece in $\mathsf{SinsemillaHashToPoint}$
 pub const K: usize = 10;
@@ -150,13 +157,13 @@ impl HashDomain {
     #[allow(non_snake_case)]
     fn hash_to_point_inner(&self, msg: impl Iterator<Item = bool>) -> IncompletePoint {
         let padded: Vec<_> = Pad::new(msg).collect();
+        let generators = &*SINSEMILLA_S_AFFINE;
 
         padded
             .chunks(K)
             .fold(IncompletePoint::from(self.Q), |acc, chunk| {
-                let (S_x, S_y) =
-                    SINSEMILLA_S[lebs2ip_k(chunk.try_into().expect("correct length")) as usize];
-                let S_chunk = pallas::Affine::from_xy(S_x, S_y).unwrap();
+                let word = lebs2ip_k(chunk.try_into().expect("correct length"));
+                let S_chunk = generators[word as usize];
                 (acc + S_chunk) + acc
             })
     }
@@ -326,6 +333,11 @@ mod tests {
             };
             let actual = SINSEMILLA_S[j as usize];
             assert_eq!(computed, actual);
+
+            let decoded = super::SINSEMILLA_S_AFFINE[j as usize]
+                .coordinates()
+                .unwrap();
+            assert_eq!((*decoded.x(), *decoded.y()), actual);
         }
     }
 }
