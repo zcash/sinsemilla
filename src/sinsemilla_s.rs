@@ -4,7 +4,7 @@ use pasta_curves::pallas;
 /// The precomputed bases for the [Sinsemilla hash function][concretesinsemillahash].
 ///
 /// [concretesinsemillahash]: https://zips.z.cash/protocol/protocol.pdf#concretesinsemillahash
-pub const SINSEMILLA_S: [(pallas::Base, pallas::Base); 1 << K] = [
+pub static SINSEMILLA_S: [(pallas::Base, pallas::Base); 1 << K] = [
     (
         pallas::Base::from_raw([
             0x5a91_eb91_2044_ea5f,
