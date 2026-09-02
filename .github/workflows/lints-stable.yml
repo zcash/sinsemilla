@@ -3,6 +3,12 @@ name: Stable lints
 # We only run these lints on trial-merges of PRs to reduce noise.
 on: pull_request
 
+concurrency:
+  # Cancel a superseded run of the same workflow on the same pull request; a
+  # push to a branch or to main keeps running, so history stays complete.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions: {}
 
 jobs:
