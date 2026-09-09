@@ -1,0 +1,157 @@
+name: CI checks
+
+on: [push, pull_request]
+
+concurrency:
+  # Cancel a superseded run of the same workflow on the same pull request; a
+  # push to a branch or to main keeps running, so history stays complete.
+  group: ${{ github.workflow }}-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Test on ${{ matrix.os }} with ${{ matrix.features }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macOS-latest]
+        features: [--all-features, --no-default-features]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run tests
+        # `shell: bash` because the Windows runner otherwise uses PowerShell,
+        # where `${FEATURES}` does not read the environment and expands empty.
+        shell: bash
+        run: cargo test --verbose --release "${FEATURES}"
+        env:
+          FEATURES: ${{ matrix.features }}
+      - name: Verify working directory is clean
+        run: git diff --exit-code
+
+  test-32-bit:
+    name: Test on i686-unknown-linux-gnu with ${{ matrix.features }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        features: [--all-features, --no-default-features]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install cross-platform support dependencies
+        run: sudo apt-get install -y gcc-multilib
+      - run: rustup target add i686-unknown-linux-gnu
+      - name: Run tests
+        run: >
+          cargo test
+          --verbose
+          --target i686-unknown-linux-gnu
+          "${FEATURES}"
+        env:
+          FEATURES: ${{ matrix.features }}
+      - name: Verify working directory is clean
+        run: git diff --exit-code
+
+  no-std:
+    name: Check no-std target ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - thumbv6m-none-eabi
+          - wasm32-unknown-unknown
+          - wasm32-wasip1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup target add "${TARGET}"
+        env:
+          TARGET: ${{ matrix.target }}
+      - name: Build
+        run: >
+          cargo build
+          --verbose
+          --target "${TARGET}"
+          --no-default-features
+        env:
+          TARGET: ${{ matrix.target }}
+
+  msrv:
+    name: Build and test on the MSRV toolchain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # The toolchain repository has no release tags, so pin the `master` branch
+      # and select the version through the `toolchain` input.
+      #
+      # Keep this version in step with `rust-version` in Cargo.toml. The point of
+      # the job is that the declared MSRV is checked rather than merely asserted.
+      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
+        id: toolchain
+        with:
+          toolchain: "1.88.0"
+      - run: rustup override set "${TOOLCHAIN}"
+        shell: sh
+        env:
+          TOOLCHAIN: ${{ steps.toolchain.outputs.name }}
+      # `--locked` so the committed lockfile is what gets exercised; a resolver
+      # that silently upgrades a dependency would hide an MSRV regression in it.
+      - name: Run tests
+        run: cargo test --verbose --locked --all-features
+
+  doc-links:
+    name: Intra-doc links
+    runs-on: ubuntu-latest
+    env:
+      # The crate does not carry `#![deny(rustdoc::broken_intra_doc_links)]`, so
+      # promote rustdoc's warnings here instead.
+      RUSTDOCFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo fetch
+      - name: Check intra-doc links
+        run: cargo doc --all-features --document-private-items --no-deps
+
+  fmt:
+    name: Rustfmt
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: cargo fmt -- --check
+
+  required:
+    name: Required status checks have passed
+    # `fmt` and `doc-links` are excluded so that they remain visible as their
+    # own separately-required checks.
+    needs:
+      - test
+      - test-32-bit
+      - no-std
+      - msrv
+    # `always()` is load-bearing: without it this job is skipped when a needed
+    # job fails, and GitHub treats a skipped required check as satisfied.
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine whether all required-pass jobs succeeded
+        # `needs` is bound through the environment rather than interpolated into
+        # the script, so its contents can never be parsed as shell.
+        env:
+          NEEDS: ${{ toJSON(needs) }}
+        run: |
+          echo "$NEEDS" | jq -e 'to_entries | all(.value.result == "success")'

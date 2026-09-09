@@ -6,6 +6,10 @@ and this project adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed
+- MSRV is now 1.88.
+- `sinsemilla::SINSEMILLA_S` is now a `static` instead of a `const`. It can no
+  longer be used in a const context.
 
 ## [0.1.0] - 2024-12-13
 Initial release, extracted from `halo2_gadgets 0.3.0`. Includes minor changes
