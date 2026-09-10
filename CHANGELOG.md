@@ -8,6 +8,12 @@ and this project adheres to Rust's notion of
 ## [Unreleased]
 ### Changed
 - MSRV is now 1.88.
+- Migrated to `ff 0.14` and `group 0.14`. This is a breaking change for
+  consumers: `group 0.14` moves the affine operations onto the new
+  `group::CurveAffine` supertrait, so a caller that imported
+  `group::cofactor::CofactorCurveAffine` or `group::prime::PrimeCurveAffine`
+  to reach `to_curve`, `identity` or `generator` on `pasta_curves::pallas::Affine`
+  now imports `group::CurveAffine` instead.
 - `sinsemilla::SINSEMILLA_S` is now a `static` instead of a `const`. It can no
   longer be used in a const context.
 
