@@ -18,8 +18,16 @@ group = "0.14"
 pasta_curves = { version = "0.5", default-features = false, features = ["alloc"] }
 subtle = { version = "2.3", default-features = false }
 
+[dev-dependencies]
+criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
+rand = "0.10"
+
 [features]
 test-dependencies = []
+
+[[bench]]
+name = "sinsemilla"
+harness = false
 
 [patch.crates-io]
 pasta_curves = { git = "https://github.com/zcash/pasta_curves.git", rev = "6aac244ffd28d4f704ef873ceb8c374610d328ec" }
