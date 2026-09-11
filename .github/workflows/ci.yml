@@ -31,6 +31,11 @@ jobs:
         run: cargo test --verbose --release "${FEATURES}"
         env:
           FEATURES: ${{ matrix.features }}
+      - name: Run benchmarks
+        shell: bash
+        run: cargo test --verbose --release --benches "${FEATURES}"
+        env:
+          FEATURES: ${{ matrix.features }}
       - name: Verify working directory is clean
         run: git diff --exit-code
 
@@ -109,6 +114,8 @@ jobs:
       # that silently upgrades a dependency would hide an MSRV regression in it.
       - name: Run tests
         run: cargo test --verbose --locked --all-features
+      - name: Run benchmarks
+        run: cargo test --verbose --locked --all-features --benches
 
   doc-links:
     name: Intra-doc links
