@@ -267,7 +267,10 @@ impl CommitDomain {
 mod tests {
     use alloc::vec::Vec;
 
+    use super::sinsemilla_s::SINSEMILLA_S;
     use super::{Pad, K};
+    use group::Curve;
+    use pasta_curves::arithmetic::CurveAffine;
     use pasta_curves::{arithmetic::CurveExt, pallas};
 
     #[test]
@@ -313,10 +316,6 @@ mod tests {
 
     #[test]
     fn sinsemilla_s() {
-        use super::sinsemilla_s::SINSEMILLA_S;
-        use group::Curve;
-        use pasta_curves::arithmetic::CurveAffine;
-
         let hasher = pallas::Point::hash_to_curve(super::S_PERSONALIZATION);
 
         for j in 0..(1u32 << K) {
