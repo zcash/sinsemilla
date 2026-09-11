@@ -42,14 +42,6 @@ const L_MERKLE: usize = 255;
 /// followed by two [`L_MERKLE`]-bit nodes.
 const MERKLE_CRH_BITS: usize = K + 2 * L_MERKLE;
 
-/// Length in [`K`]-bit words of a $\mathsf{MerkleCRH^{Orchard}}$ message.
-///
-/// This is the fixed length that the position-weighted specialisation is built around,
-/// so the assertion below is load-bearing rather than decorative.
-const MERKLE_CRH_WORDS: usize = MERKLE_CRH_BITS / K;
-const _: () = assert!(MERKLE_CRH_BITS == MERKLE_CRH_WORDS * K);
-const _: () = assert!(MERKLE_CRH_WORDS == 52);
-
 /// The hash domain of $\mathsf{MerkleCRH^{Orchard}}$.
 ///
 /// Constructing this performs a hash-to-curve, so callers that measure or repeat the
