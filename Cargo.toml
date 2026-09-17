@@ -18,6 +18,11 @@ group = "0.14"
 pasta_curves = { version = "0.5", default-features = false, features = ["alloc"] }
 subtle = { version = "2.3", default-features = false }
 
+[build-dependencies]
+ff = { version = "0.14", default-features = false }
+group = "0.14"
+pasta_curves = { version = "0.5", default-features = false, features = ["alloc"] }
+
 [dev-dependencies]
 criterion = { version = "0.8.2", default-features = false, features = ["cargo_bench_support"] }
 rand = "0.10"
@@ -30,4 +35,9 @@ name = "sinsemilla"
 harness = false
 
 [patch.crates-io]
-pasta_curves = { git = "https://github.com/zcash/pasta_curves.git", rev = "6aac244ffd28d4f704ef873ceb8c374610d328ec" }
+# zcash/pasta_curves branch dw/from-xy-unchecked: the ff 0.14 support main
+# already patches for, plus the `from_xy_unchecked` of
+# https://github.com/zcash/pasta_curves/pull/116 that the affine constants need.
+# Neither is in a release yet. Replace this with a version requirement once they
+# are; this commit is the only thing to drop.
+pasta_curves = { git = "https://github.com/zcash/pasta_curves.git", rev = "e44de5937eeb00d31d6792b669da57f39d59a1f2" }

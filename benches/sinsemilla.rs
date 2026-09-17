@@ -1,9 +1,7 @@
 //! Benchmarks for Sinsemilla hashing.
 //!
 //! The 520-bit case is the one that matters for wallet syncing and for block validation:
-//! a fixed domain and exactly 52 words. `hash/batch` measures it separately from a single
-//! evaluation because a specialisation that trades table size for arithmetic only pays
-//! for itself when the table stays resident across many of them.
+//! a fixed domain and exactly 52 words.
 
 use std::hint::black_box;
 
@@ -19,14 +17,21 @@ const MERKLE_HASH_BITS: usize = 52 * K;
 const NOTE_COMMIT_BITS: usize = 256 + 256 + 64 + 255 + 255;
 
 /// Number of messages in the batched benchmark.
-///
-/// Large enough that a precomputed table cannot stay in L1, so the batch measures the
-/// steady state a wallet or full node sees rather than a warm-cache best case.
 const BATCH: usize = 1 << 10;
 
 /// Returns `n` random bits.
 fn random_bits(n: usize) -> Vec<bool> {
     rand::random_iter().take(n).collect()
+}
+
+/// Labels a message size, so a benchmark name reads `520-bits` rather than `520`.
+fn bits_label(bits: usize) -> String {
+    format!("{bits}-bits")
+}
+
+/// Labels a batch of [`BATCH`] messages of `bits` bits each.
+fn batch_label(bits: usize) -> String {
+    format!("{}/{BATCH}-messages", bits_label(bits))
 }
 
 fn hash(c: &mut Criterion) {
@@ -36,9 +41,11 @@ fn hash(c: &mut Criterion) {
     for bits in [K, MERKLE_HASH_BITS, K * C] {
         let msg = random_bits(bits);
         group.throughput(Throughput::Elements((bits / K) as u64));
-        group.bench_with_input(BenchmarkId::from_parameter(bits), &msg, |b, msg| {
-            b.iter(|| domain.hash(black_box(msg).iter().copied()))
-        });
+        group.bench_with_input(
+            BenchmarkId::from_parameter(bits_label(bits)),
+            &msg,
+            |b, msg| b.iter(|| domain.hash(black_box(msg).iter().copied())),
+        );
     }
     group.finish();
 }
@@ -49,13 +56,41 @@ fn hash_batch(c: &mut Criterion) {
 
     let mut group = c.benchmark_group("hash/batch");
     group.throughput(Throughput::Elements(BATCH as u64));
-    group.bench_function(BenchmarkId::from_parameter(BATCH), |b| {
-        b.iter(|| {
-            for msg in &msgs {
-                black_box(domain.hash(msg.iter().copied()));
-            }
-        })
-    });
+    group.bench_function(
+        BenchmarkId::from_parameter(batch_label(MERKLE_HASH_BITS)),
+        |b| {
+            b.iter(|| {
+                for msg in &msgs {
+                    black_box(domain.hash(msg.iter().copied()));
+                }
+            })
+        },
+    );
+    group.finish();
+}
+
+/// Domain construction, which Orchard pays on every Merkle hash and note commitment.
+///
+/// The Zcash personalizations return a stored point; any other one is hashed to the curve,
+/// so both are measured.
+fn domain(c: &mut Criterion) {
+    let mut group = c.benchmark_group("domain");
+    for (label, name) in [
+        ("orchard-merkle-crh", "z.cash:Orchard-MerkleCRH"),
+        ("unknown", "z.cash:test-Sinsemilla"),
+    ] {
+        group.bench_function(BenchmarkId::new("hash", label), |b| {
+            b.iter(|| HashDomain::new(black_box(name)))
+        });
+    }
+    for (label, name) in [
+        ("orchard-note-commit", "z.cash:Orchard-NoteCommit"),
+        ("unknown", "z.cash:test-NoteCommit"),
+    ] {
+        group.bench_function(BenchmarkId::new("commit", label), |b| {
+            b.iter(|| CommitDomain::new(black_box(name)))
+        });
+    }
     group.finish();
 }
 
@@ -65,10 +100,42 @@ fn commit(c: &mut Criterion) {
     let msg = random_bits(NOTE_COMMIT_BITS);
     let r = pallas::Scalar::random(&mut rand::rng());
 
-    c.bench_function("short_commit", |b| {
-        b.iter(|| domain.short_commit(black_box(&msg).iter().copied(), black_box(&r)))
-    });
+    let mut group = c.benchmark_group("short_commit");
+    group.bench_function(
+        BenchmarkId::from_parameter(bits_label(NOTE_COMMIT_BITS)),
+        |b| b.iter(|| domain.short_commit(black_box(&msg).iter().copied(), black_box(&r))),
+    );
+    group.finish();
 }
 
-criterion_group!(benches, hash, hash_batch, commit);
+/// The compiled-in position-weighted tables against the generic evaluator, on the
+/// messages Orchard hashes.
+fn table(c: &mut Criterion) {
+    use sinsemilla::table;
+
+    let mut group = c.benchmark_group("table");
+    for (label, personalization, bits) in [
+        ("merkle-crh", "z.cash:Orchard-MerkleCRH", MERKLE_HASH_BITS),
+        (
+            "note-commit",
+            "z.cash:Orchard-NoteCommit-M",
+            NOTE_COMMIT_BITS,
+        ),
+    ] {
+        let domain = HashDomain::new(personalization);
+        let tabled = table::TableDomain::new(personalization).expect("a known domain");
+        let msg = random_bits(bits);
+        let words = table::to_words(msg.iter().copied()).expect("a covered length");
+
+        group.bench_function(BenchmarkId::new("generic", label), |b| {
+            b.iter(|| domain.hash(black_box(&msg).iter().copied()))
+        });
+        group.bench_function(BenchmarkId::new("table", label), |b| {
+            b.iter(|| tabled.hash(black_box(&words)))
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, hash, hash_batch, domain, commit, table);
 criterion_main!(benches);
