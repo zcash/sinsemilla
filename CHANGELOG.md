@@ -6,6 +6,28 @@ and this project adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- `sinsemilla::table`, position-weighted tables for the hash domains Zcash
+  specifies, generated at build time into read-only data. One generator table
+  serves every domain and every message length, because the coefficient of a
+  word counted from the end of the message depends on neither; a start table
+  holds `[2^n] Q` per known personalization and per length, up to 128 words.
+  `TableDomain::hash` evaluates a hash with one mixed addition per word and
+  `STRIDE - 1` doublings in total, against one doubling per word for
+  `HashDomain`.
+
+  It is a separate entry point, not a faster path inside `HashDomain`, because
+  it does NOT reproduce the specification's bottom: the specification uses
+  incomplete addition and is bottom on exceptional inputs, and reassociating the
+  sum never forms those intermediate accumulators. The two agree on every input
+  where the specification is not bottom. A caller that needs bottom, or a
+  message longer than the tables cover, must use `HashDomain`.
+
+  The table size follows a budget sized to the private L2 it shares with the
+  caller: 128 KiB on Android, 4 MiB on macOS, 1 MiB elsewhere. Set
+  `SINSEMILLA_TABLE_LIMIT` (bytes) at build time to choose another; it selects
+  the stride, which changes the cost and never the result.
+
 ### Changed
 - MSRV is now 1.88.
 - `HashDomain::hash_to_point` now computes the accumulator step `[2] A + S` as
