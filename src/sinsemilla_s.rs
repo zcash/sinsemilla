@@ -14342,3 +14342,55 @@ pub static SINSEMILLA_S: [(pallas::Base, pallas::Base); 1 << K] = [
         ]),
     ),
 ];
+
+/// [`SINSEMILLA_S`] as affine points, for the hash itself.
+///
+/// Converting a coordinate pair with `from_xy` checks that it is on the curve, which
+/// costs about a tenth of a Sinsemilla hash when paid for every message word. These
+/// points are built once, at compile time, with `from_xy_unchecked`; the
+/// `sinsemilla_s` test checks each of them against a fresh hash to the curve.
+///
+/// [`SINSEMILLA_S`] itself is left as coordinate pairs because it is public API.
+///
+/// # The size, memory and time trade-off
+///
+/// This table holds the same 1024 points as [`SINSEMILLA_S`], in the same 64 bytes
+/// each, so in principle it duplicates 64 KiB. What that costs depends on whether the
+/// consumer also uses the public coordinate table:
+///
+/// - A consumer that only hashes never names [`SINSEMILLA_S`], so the linker drops it
+///   and keeps only this one. The binary gets slightly *smaller*, because the
+///   per-word `from_xy` (a square, two multiplications and a comparison) is gone.
+/// - A consumer that also uses [`SINSEMILLA_S`] keeps both, and pays the full 64 KiB.
+///
+/// Measured on aarch64-apple-darwin, `cargo build --release --example`, comparing the
+/// commit that introduced this table against its parent:
+///
+/// ```text
+///     hashing only                  640 608 -> 640 048 bytes   (-560)
+///     hashing and SINSEMILLA_S      642 512 -> 708 112 bytes   (+65 600)
+/// ```
+///
+/// Against that, a 520-bit hash goes from 30.0 us to 27.3 us and a 1086-bit short
+/// commitment from 95.6 us to 88.9 us on the same machine (`cargo bench --bench
+/// sinsemilla`).
+///
+/// There is no run-time memory cost and no start-up cost: the table is built during
+/// compilation and lives in read-only data, which on an embedded target stays in flash
+/// and is read in place rather than copied to RAM. The alternative shapes are worse
+/// for this crate: building the table lazily needs a `no_std` once-cell dependency and
+/// a first-use cost, and dropping [`SINSEMILLA_S`] to avoid the duplication would be a
+/// breaking public API change.
+pub(crate) static S_AFFINE: [pallas::Affine; 1 << K] = {
+    let mut points = [pallas::Affine::from_xy_unchecked(
+        pallas::Base::from_raw([0; 4]),
+        pallas::Base::from_raw([0; 4]),
+    ); 1 << K];
+    let mut j = 0;
+    while j < 1 << K {
+        let (x, y) = SINSEMILLA_S[j];
+        points[j] = pallas::Affine::from_xy_unchecked(x, y);
+        j += 1;
+    }
+    points
+};
