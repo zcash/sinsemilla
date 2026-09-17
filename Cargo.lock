@@ -454,6 +454,7 @@ name = "sinsemilla"
 version = "0.1.0"
 dependencies = [
  "criterion",
+ "ff",
  "group",
  "pasta_curves",
  "rand",

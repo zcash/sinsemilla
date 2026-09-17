@@ -1,6 +1,9 @@
 //! Implementation of Sinsemilla outside the circuit.
 
 #![no_std]
+// The generated tables are thousands of `Fp::from_raw` calls, each a Montgomery
+// conversion, so const evaluation of them is long by construction rather than stuck.
+#![allow(long_running_const_eval)]
 
 // We require `alloc` for now.
 #[macro_use]
@@ -17,6 +20,7 @@ mod addition;
 use self::addition::IncompletePoint;
 mod known_domains;
 mod sinsemilla_s;
+pub mod table;
 pub use sinsemilla_s::SINSEMILLA_S;
 
 /// Number of bits of each message piece in $\mathsf{SinsemillaHashToPoint}$
