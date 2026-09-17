@@ -108,5 +108,34 @@ fn commit(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, hash, hash_batch, domain, commit);
+/// The compiled-in position-weighted tables against the generic evaluator, on the
+/// messages Orchard hashes.
+fn table(c: &mut Criterion) {
+    use sinsemilla::table;
+
+    let mut group = c.benchmark_group("table");
+    for (label, personalization, bits) in [
+        ("merkle-crh", "z.cash:Orchard-MerkleCRH", MERKLE_HASH_BITS),
+        (
+            "note-commit",
+            "z.cash:Orchard-NoteCommit-M",
+            NOTE_COMMIT_BITS,
+        ),
+    ] {
+        let domain = HashDomain::new(personalization);
+        let tabled = table::TableDomain::new(personalization).expect("a known domain");
+        let msg = random_bits(bits);
+        let words = table::to_words(msg.iter().copied()).expect("a covered length");
+
+        group.bench_function(BenchmarkId::new("generic", label), |b| {
+            b.iter(|| domain.hash(black_box(&msg).iter().copied()))
+        });
+        group.bench_function(BenchmarkId::new("table", label), |b| {
+            b.iter(|| tabled.hash(black_box(&words)))
+        });
+    }
+    group.finish();
+}
+
+criterion_group!(benches, hash, hash_batch, domain, commit, table);
 criterion_main!(benches);
