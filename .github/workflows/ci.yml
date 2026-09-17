@@ -90,6 +90,38 @@ jobs:
         env:
           TARGET: ${{ matrix.target }}
 
+  wallet-sdk-targets:
+    name: Check wallet SDK target ${{ matrix.target }}
+    # The Zcash mobile wallet SDKs ship on these targets, and no test job runs on most
+    # of them, so at least compile the library for each.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-linux-android
+          - armv7-linux-androideabi
+          - i686-linux-android
+          - x86_64-linux-android
+          - aarch64-apple-ios
+          - aarch64-apple-ios-sim
+          - x86_64-apple-ios
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup target add "${TARGET}"
+        env:
+          TARGET: ${{ matrix.target }}
+      # `--lib` only: the dev-dependencies build C code through `cc`, which needs
+      # the target's toolchain (the NDK, or an Apple SDK) that this runner lacks.
+      - name: Check
+        run: cargo check --verbose --lib --target "${TARGET}"
+        env:
+          TARGET: ${{ matrix.target }}
+
   msrv:
     name: Build and test on the MSRV toolchain
     runs-on: ubuntu-latest
@@ -149,6 +181,7 @@ jobs:
       - test
       - test-32-bit
       - no-std
+      - wallet-sdk-targets
       - msrv
     # `always()` is load-bearing: without it this job is skipped when a needed
     # job fails, and GitHub treats a skipped required check as satisfied.
