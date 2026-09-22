@@ -71,6 +71,10 @@ jobs:
       matrix:
         target:
           - thumbv6m-none-eabi
+          # Cortex-M4F with hardware float, which the Keystone3 hardware wallet
+          # builds for. It is not covered by thumbv6m: that is ARMv6-M, without
+          # the ARMv7E-M instructions or the FPU.
+          - thumbv7em-none-eabihf
           - wasm32-unknown-unknown
           - wasm32-wasip1
     steps:
