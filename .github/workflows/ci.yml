@@ -1,6 +1,9 @@
 name: CI checks
 
-on: [push, pull_request]
+on:
+  pull_request:
+  push:
+    branches: main
 
 concurrency:
   # Cancel a superseded run of the same workflow on the same pull request; a
@@ -28,7 +31,7 @@ jobs:
         # `shell: bash` because the Windows runner otherwise uses PowerShell,
         # where `${FEATURES}` does not read the environment and expands empty.
         shell: bash
-        run: cargo test --verbose --release "${FEATURES}"
+        run: cargo test --verbose --locked --release "${FEATURES}"
         env:
           FEATURES: ${{ matrix.features }}
       - name: Verify working directory is clean
@@ -46,12 +49,13 @@ jobs:
         with:
           persist-credentials: false
       - name: Install cross-platform support dependencies
-        run: sudo apt-get install -y gcc-multilib
+        run: sudo apt update && sudo apt install -y gcc-multilib
       - run: rustup target add i686-unknown-linux-gnu
       - name: Run tests
         run: >
           cargo test
           --verbose
+          --locked
           --target i686-unknown-linux-gnu
           "${FEATURES}"
         env:
@@ -80,6 +84,7 @@ jobs:
         run: >
           cargo build
           --verbose
+          --locked
           --target "${TARGET}"
           --no-default-features
         env:
