@@ -28,7 +28,7 @@ jobs:
         # `shell: bash` because the Windows runner otherwise uses PowerShell,
         # where `${FEATURES}` does not read the environment and expands empty.
         shell: bash
-        run: cargo test --verbose --release "${FEATURES}"
+        run: cargo test --verbose --locked --release "${FEATURES}"
         env:
           FEATURES: ${{ matrix.features }}
       - name: Verify working directory is clean
@@ -52,6 +52,7 @@ jobs:
         run: >
           cargo test
           --verbose
+          --locked
           --target i686-unknown-linux-gnu
           "${FEATURES}"
         env:
@@ -80,6 +81,7 @@ jobs:
         run: >
           cargo build
           --verbose
+          --locked
           --target "${TARGET}"
           --no-default-features
         env:

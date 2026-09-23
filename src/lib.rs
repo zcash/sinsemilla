@@ -212,8 +212,8 @@ impl CommitDomain {
     /// `z.cash:Orchard-NoteCommit`, as specified in
     /// [ZIP 226](https://zips.z.cash/zip-0226#note-structure-commitment).
     pub fn new_with_separate_domains(hash_domain: &str, blind_domain: &str) -> Self {
-        let m_prefix = format!("{}-M", hash_domain);
-        let r_prefix = format!("{}-r", blind_domain);
+        let m_prefix = format!("{hash_domain}-M");
+        let r_prefix = format!("{blind_domain}-r");
         let hasher_r = pallas::Point::hash_to_curve(&r_prefix);
         CommitDomain {
             M: HashDomain::new(&m_prefix),
