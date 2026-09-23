@@ -1,6 +1,9 @@
 name: CI checks
 
-on: [push, pull_request]
+on:
+  pull_request:
+  push:
+    branches: main
 
 concurrency:
   # Cancel a superseded run of the same workflow on the same pull request; a
