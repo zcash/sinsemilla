@@ -160,3 +160,14 @@ jobs:
           NEEDS: ${{ toJSON(needs) }}
         run: |
           echo "$NEEDS" | jq -e 'to_entries | all(.value.result == "success")'
+
+  bitrot:
+    name: Bitrot check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # Build benchmarks to prevent bitrot
+      - name: Build benchmarks
+        run: cargo build --all --benches
