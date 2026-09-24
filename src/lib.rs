@@ -17,6 +17,7 @@ use subtle::CtOption;
 
 mod addition;
 use self::addition::IncompletePoint;
+mod known_domains;
 mod sinsemilla_s;
 pub use sinsemilla_s::SINSEMILLA_S;
 
@@ -136,7 +137,9 @@ impl HashDomain {
     /// Constructs a new `HashDomain` with a specific prefix string.
     pub fn new(domain: &str) -> Self {
         HashDomain {
-            Q: pallas::Point::hash_to_curve(Q_PERSONALIZATION)(domain.as_bytes()),
+            Q: known_domains::q(domain).unwrap_or_else(|| {
+                pallas::Point::hash_to_curve(Q_PERSONALIZATION)(domain.as_bytes())
+            }),
         }
     }
 
@@ -214,10 +217,10 @@ impl CommitDomain {
     pub fn new_with_separate_domains(hash_domain: &str, blind_domain: &str) -> Self {
         let m_prefix = format!("{hash_domain}-M");
         let r_prefix = format!("{blind_domain}-r");
-        let hasher_r = pallas::Point::hash_to_curve(&r_prefix);
         CommitDomain {
             M: HashDomain::new(&m_prefix),
-            R: hasher_r(&[]),
+            R: known_domains::r(&r_prefix)
+                .unwrap_or_else(|| pallas::Point::hash_to_curve(&r_prefix)(&[])),
         }
     }
 
