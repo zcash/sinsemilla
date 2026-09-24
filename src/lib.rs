@@ -1,6 +1,7 @@
 //! Implementation of Sinsemilla outside the circuit.
 
 #![no_std]
+#![cfg_attr(docsrs, feature(doc_cfg))]
 
 // We require `alloc` for now.
 #[macro_use]
