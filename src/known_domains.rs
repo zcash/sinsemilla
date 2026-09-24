@@ -157,7 +157,7 @@ mod tests {
         pallas,
     };
 
-    use super::{q, r, Q, R};
+    use super::{Q, R, q, r};
     use crate::Q_PERSONALIZATION;
 
     #[test]
