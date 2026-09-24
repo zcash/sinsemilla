@@ -1,3 +1,4 @@
+#[cfg(test)]
 use core::ops::Add;
 
 use group::{CurveAffine as _, Group};
@@ -62,6 +63,15 @@ impl IncompletePoint {
     }
 }
 
+// The two incomplete additions below are the literal specification form of the
+// accumulator step, $(\mathsf{acc} ⸭ S) ⸭ \mathsf{acc}$. The hash no longer takes that
+// path: it uses `double_and_add`, which is one doubling and one mixed addition instead.
+//
+// They are kept, compiled only under `cfg(test)`, because the equivalence of the two
+// forms is the entire content of that rewrite, and an oracle to test it against is worth
+// more than the lines it costs. `tests::double_and_add_matches_two_incomplete_additions`
+// is the only caller. Deleting them would leave the rewrite pinned by nothing.
+#[cfg(test)]
 impl Add for IncompletePoint {
     type Output = IncompletePoint;
 
@@ -86,6 +96,7 @@ impl Add for IncompletePoint {
     }
 }
 
+#[cfg(test)]
 impl Add<pallas::Affine> for IncompletePoint {
     type Output = IncompletePoint;
 
@@ -109,5 +120,83 @@ impl Add<pallas::Affine> for IncompletePoint {
                 !(p.is_identity() | q.is_identity() | p.ct_eq(&q) | p.ct_eq(&-q)),
             )
         }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use group::{ff::Field, Curve, CurveAffine as _, Group};
+    use pasta_curves::{arithmetic::CurveExt, pallas};
+    use subtle::CtOption;
+
+    use super::IncompletePoint;
+    use crate::S_PERSONALIZATION;
+
+    /// The specification's form of the step, through the two incomplete additions.
+    fn two_incomplete_additions(acc: pallas::Point, s: pallas::Affine) -> CtOption<pallas::Point> {
+        let acc = IncompletePoint::from(acc);
+        ((acc + s) + acc).into()
+    }
+
+    /// Asserts the two forms agree on the value and on which inputs are $\bot$.
+    fn assert_same(acc: pallas::Point, s: pallas::Affine, case: &str) {
+        let expected = two_incomplete_additions(acc, s);
+        let actual: CtOption<pallas::Point> = IncompletePoint::from(acc).double_and_add(s).into();
+
+        assert_eq!(
+            bool::from(actual.is_some()),
+            bool::from(expected.is_some()),
+            "bottom disagrees: {case}",
+        );
+        if bool::from(expected.is_some()) {
+            assert_eq!(
+                actual.unwrap().to_affine(),
+                expected.unwrap().to_affine(),
+                "value disagrees: {case}",
+            );
+        }
+    }
+
+    /// [`IncompletePoint::double_and_add`] returns what the two incomplete additions it
+    /// replaced return, on every case that distinguishes them.
+    ///
+    /// The three exceptional cases are the ones the doc comment on `double_and_add`
+    /// enumerates, plus the two identity guards the literal implementation also
+    /// performed. `S = [2] A` is the case to keep: it is NOT exceptional, so the
+    /// replacement has to return a value rather than $\bot$, and it is exactly where
+    /// the mixed addition that replaced the second incomplete addition is handed two
+    /// equal points.
+    #[test]
+    fn double_and_add_matches_two_incomplete_additions() {
+        let hash = pallas::Point::hash_to_curve(S_PERSONALIZATION);
+        let half = pallas::Scalar::from(2).invert().unwrap();
+
+        for i in 0u32..64 {
+            let a = hash(&i.to_le_bytes());
+            let s = hash(&(i + 1024).to_le_bytes());
+
+            assert_same(a, s.to_affine(), "no exceptional case");
+            // alpha = -1: the first addition is a doubling.
+            assert_same(a, a.to_affine(), "S = A");
+            // alpha = 1: the first addition cancels.
+            assert_same(a, (-a).to_affine(), "S = -A");
+            // alpha = 2: the second addition cancels.
+            assert_same(a, (-a.double()).to_affine(), "S = -[2] A");
+            // Not exceptional, and the one input that makes the mixed addition double.
+            assert_same(s * half, s.to_affine(), "S = [2] A");
+            // The identity guards, which the specification's assumptions make
+            // unreachable but which the literal implementation still performed.
+            assert_same(
+                pallas::Point::identity(),
+                s.to_affine(),
+                "A is the identity",
+            );
+            assert_same(a, pallas::Affine::identity(), "S is the identity");
+            assert_same(
+                pallas::Point::identity(),
+                pallas::Affine::identity(),
+                "both are the identity",
+            );
+        }
     }
 }
