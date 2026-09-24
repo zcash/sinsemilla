@@ -125,7 +125,7 @@ impl Add<pallas::Affine> for IncompletePoint {
 
 #[cfg(test)]
 mod tests {
-    use group::{ff::Field, Curve, CurveAffine as _, Group};
+    use group::{Curve, CurveAffine as _, Group, ff::Field};
     use pasta_curves::{arithmetic::CurveExt, pallas};
     use subtle::CtOption;
 
