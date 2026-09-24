@@ -121,8 +121,11 @@ jobs:
           TARGET: ${{ matrix.target }}
       # `--lib` only: the dev-dependencies build C code through `cc`, which needs
       # the target's toolchain (the NDK, or an Apple SDK) that this runner lacks.
+      # `--all-features` because the wallet SDKs ship with `std`, and this is the
+      # only job that compiles the lookup tables for a mobile target, where their
+      # size budget differs from the default.
       - name: Check
-        run: cargo check --verbose --lib --target "${TARGET}"
+        run: cargo check --verbose --lib --all-features --target "${TARGET}"
         env:
           TARGET: ${{ matrix.target }}
 
@@ -207,4 +210,4 @@ jobs:
           persist-credentials: false
       # Build benchmarks to prevent bitrot
       - name: Build benchmarks
-        run: cargo build --all --benches
+        run: cargo build --all --benches --all-features
