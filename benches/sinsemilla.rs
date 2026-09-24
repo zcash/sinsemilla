@@ -16,6 +16,12 @@ const MERKLE_HASH_BITS: usize = 52 * K;
 /// Length in bits of an Orchard note commitment message: `g_d`, `pk_d`, `v`, `rho`, `psi`.
 const NOTE_COMMIT_BITS: usize = 256 + 256 + 64 + 255 + 255;
 
+/// Length in bits of an Orchard `CommitIvk` message: `ak` and `nk`, each `L_ORCHARD_BASE`.
+///
+/// Only the table benchmarks hash at this length, and they need the `std` feature.
+#[cfg(feature = "std")]
+const COMMIT_IVK_BITS: usize = 255 + 255;
+
 /// Number of messages in the batched benchmark.
 const BATCH: usize = 1 << 10;
 
@@ -107,5 +113,63 @@ fn commit(c: &mut Criterion) {
     group.finish();
 }
 
+/// The position-weighted tables against the specification-shaped evaluator, on the
+/// messages Orchard hashes.
+///
+/// Both sides go through `HashDomain::hash`, because that is how a caller reaches either
+/// one: a personalization the specification fixes dispatches to the tables, and any other
+/// personalization of the same length does not. So the pair differs in the evaluator and
+/// in nothing else.
+///
+/// Each is measured twice, and the difference between the two is the whole question of
+/// where the table lives:
+///
+/// - `one-message` hashes a single message over and over, so the handful of cache lines
+///   its words select stay in L1 for the whole run. This is the warm-L1 best case, and it
+///   exercises only the fraction of the table that one message touches.
+/// - `many-messages` walks `BATCH` distinct messages, so each hash reads a fresh scatter
+///   of lines and the working set is the whole table. This is what a wallet sees.
+#[cfg(feature = "std")]
+fn table(c: &mut Criterion) {
+    let mut group = c.benchmark_group("table");
+    for (label, personalization, bits) in [
+        ("merkle-crh", "z.cash:Orchard-MerkleCRH", MERKLE_HASH_BITS),
+        (
+            "note-commit",
+            "z.cash:Orchard-NoteCommit-M",
+            NOTE_COMMIT_BITS,
+        ),
+        ("commit-ivk", "z.cash:Orchard-CommitIvk-M", COMMIT_IVK_BITS),
+    ] {
+        // Same length, same code path, but no start table, so it takes the accumulator.
+        let untabled = HashDomain::new("z.cash:test-Sinsemilla");
+        let tabled = HashDomain::new(personalization);
+        let msgs: Vec<_> = (0..BATCH).map(|_| random_bits(bits)).collect();
+
+        for (domain, evaluator) in [(&untabled, "generic"), (&tabled, "table")] {
+            group.bench_function(
+                BenchmarkId::new(format!("{evaluator}/one-message"), label),
+                |b| b.iter(|| domain.hash(black_box(&msgs[0]).iter().copied())),
+            );
+
+            group.throughput(Throughput::Elements(BATCH as u64));
+            group.bench_function(
+                BenchmarkId::new(format!("{evaluator}/many-messages"), label),
+                |b| {
+                    b.iter(|| {
+                        for msg in &msgs {
+                            black_box(domain.hash(msg.iter().copied()));
+                        }
+                    })
+                },
+            );
+        }
+    }
+    group.finish();
+}
+
+#[cfg(feature = "std")]
+criterion_group!(benches, hash, hash_batch, domain, commit, table);
+#[cfg(not(feature = "std"))]
 criterion_group!(benches, hash, hash_batch, domain, commit);
 criterion_main!(benches);
