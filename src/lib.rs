@@ -6,8 +6,6 @@
 #[macro_use]
 extern crate alloc;
 
-use alloc::vec::Vec;
-
 use group::{Curve, Wnaf};
 use pasta_curves::{
     arithmetic::{CurveAffine, CurveExt},
@@ -57,72 +55,25 @@ pub fn lebs2ip_k(bits: [bool; K]) -> u32 {
 ///
 /// [concreteextractorpallas]: https://zips.z.cash/protocol/nu5.pdf#concreteextractorpallas
 fn extract_p_bottom(point: CtOption<pallas::Point>) -> CtOption<pallas::Base> {
-    point.map(|p| {
-        p.to_affine()
-            .coordinates()
-            .map(|c| *c.x())
-            .unwrap_or_else(pallas::Base::zero)
-    })
+    point.map(extract_p)
 }
 
-/// Pads the given iterator (which MUST have length $\leq K * C$) with zero-bits to a
-/// multiple of $K$ bits.
-struct Pad<I: Iterator<Item = bool>> {
-    /// The iterator we are padding.
-    inner: I,
-    /// The measured length of the inner iterator.
-    ///
-    /// This starts as a lower bound, and will be accurate once `padding_left.is_some()`.
-    len: usize,
-    /// The amount of padding that remains to be emitted.
-    padding_left: Option<usize>,
+/// Coordinate extractor for Pallas, on a point that is known to exist.
+///
+/// Defined in [Zcash Protocol Spec § 5.4.9.7: Coordinate Extractor for Pallas][concreteextractorpallas].
+///
+/// [concreteextractorpallas]: https://zips.z.cash/protocol/nu5.pdf#concreteextractorpallas
+fn extract_p(point: pallas::Point) -> pallas::Base {
+    point
+        .to_affine()
+        .coordinates()
+        .map(|c| *c.x())
+        .unwrap_or_else(pallas::Base::zero)
 }
 
-impl<I: Iterator<Item = bool>> Pad<I> {
-    fn new(inner: I) -> Self {
-        Pad {
-            inner,
-            len: 0,
-            padding_left: None,
-        }
-    }
-}
-
-impl<I: Iterator<Item = bool>> Iterator for Pad<I> {
-    type Item = bool;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            // If we have identified the required padding, the inner iterator has ended,
-            // and we will never poll it again.
-            if let Some(n) = self.padding_left.as_mut() {
-                if *n == 0 {
-                    // Either we already emitted all necessary padding, or there was no
-                    // padding required.
-                    break None;
-                } else {
-                    // Emit the next padding bit.
-                    *n -= 1;
-                    break Some(false);
-                }
-            } else if let Some(ret) = self.inner.next() {
-                // We haven't reached the end of the inner iterator yet.
-                self.len += 1;
-                assert!(self.len <= K * C);
-                break Some(ret);
-            } else {
-                // Inner iterator just ended, so we now know its length.
-                let rem = self.len % K;
-                if rem > 0 {
-                    // The inner iterator requires padding in the range [1,K).
-                    self.padding_left = Some(K - rem);
-                } else {
-                    // No padding required.
-                    self.padding_left = Some(0);
-                }
-            }
-        }
-    }
+/// The Sinsemilla generator $\mathcal{S}(j)$ as an affine point, for `j` < $2^K$.
+fn s_generator(j: usize) -> pallas::Affine {
+    sinsemilla_s::S_AFFINE[j]
 }
 
 /// A domain in which $\mathsf{SinsemillaHashToPoint}$ and $\mathsf{SinsemillaHash}$ can
@@ -150,18 +101,31 @@ impl HashDomain {
         self.hash_to_point_inner(msg).into()
     }
 
-    #[allow(non_snake_case)]
+    /// Runs the accumulator over `msg`, reading it a [`K`]-bit word at a time and
+    /// zero-padding the final word, without collecting the message first.
+    ///
+    /// # Panics
+    ///
+    /// Panics if the message is longer than [`K`] * [`C`] bits.
     fn hash_to_point_inner(&self, msg: impl Iterator<Item = bool>) -> IncompletePoint {
-        let padded: Vec<_> = Pad::new(msg).collect();
+        let mut acc = IncompletePoint::from(self.Q);
+        let mut word = 0usize;
+        let mut len = 0usize;
 
-        padded
-            .chunks(K)
-            .fold(IncompletePoint::from(self.Q), |acc, chunk| {
-                let (S_x, S_y) =
-                    SINSEMILLA_S[lebs2ip_k(chunk.try_into().expect("correct length")) as usize];
-                let S_chunk = pallas::Affine::from_xy(S_x, S_y).unwrap();
-                (acc + S_chunk) + acc
-            })
+        for bit in msg {
+            assert!(len < K * C, "message is longer than K * C bits");
+            word |= usize::from(bit) << (len % K);
+            len += 1;
+            if len.is_multiple_of(K) {
+                acc = acc.double_and_add(s_generator(word));
+                word = 0;
+            }
+        }
+        if !len.is_multiple_of(K) {
+            acc = acc.double_and_add(s_generator(word));
+        }
+
+        acc
     }
 
     /// $\mathsf{SinsemillaHash}$ from [§ 5.4.1.9][concretesinsemillahash].
@@ -270,53 +234,94 @@ impl CommitDomain {
 mod tests {
     use alloc::vec::Vec;
 
-    use super::sinsemilla_s::SINSEMILLA_S;
-    use super::{Pad, K};
-    use group::Curve;
+    use super::sinsemilla_s::{SINSEMILLA_S, S_AFFINE};
+    use super::{lebs2ip_k, s_generator, HashDomain, IncompletePoint, C, K};
+    use group::{Curve, CurveAffine as _};
     use pasta_curves::{
         arithmetic::{CurveAffine, CurveExt},
         pallas,
     };
+    use subtle::CtOption;
+
+    /// The evaluator as it was before it streamed words: collect the message, zero-pad it
+    /// to a multiple of `K` bits, then fold over the `K`-bit chunks.
+    fn reference(domain: &HashDomain, msg: &[bool]) -> CtOption<pallas::Point> {
+        assert!(msg.len() <= K * C);
+        let mut padded = msg.to_vec();
+        padded.resize(msg.len().div_ceil(K) * K, false);
+        padded
+            .chunks(K)
+            .fold(IncompletePoint::from(domain.Q), |acc, chunk| {
+                let word = lebs2ip_k(chunk.try_into().expect("K bits")) as usize;
+                acc.double_and_add(s_generator(word))
+            })
+            .into()
+    }
+
+    /// A deterministic bit stream (xorshift64), so the test needs no RNG dependency.
+    fn bits(seed: u64, n: usize) -> Vec<bool> {
+        let mut x = seed | 1;
+        (0..n)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 7;
+                x ^= x << 17;
+                x & 1 == 1
+            })
+            .collect()
+    }
+
+    fn assert_same(domain: &HashDomain, msg: &[bool]) {
+        let expected = reference(domain, msg);
+        let actual = domain.hash_to_point(msg.iter().copied());
+        assert_eq!(
+            bool::from(actual.is_some()),
+            bool::from(expected.is_some()),
+            "bottom disagrees at {} bits",
+            msg.len(),
+        );
+        if bool::from(expected.is_some()) {
+            assert_eq!(actual.unwrap(), expected.unwrap(), "{} bits", msg.len());
+        }
+    }
+
+    /// Streaming agrees with collect-then-chunk at every length the hash accepts, which
+    /// covers every amount of padding and both the empty and the longest message.
+    #[test]
+    fn streaming_matches_reference_at_every_length() {
+        let domain = HashDomain::new("z.cash:test-Sinsemilla");
+        for len in 0..=K * C {
+            assert_same(&domain, &bits(len as u64 + 1, len));
+        }
+    }
+
+    /// Bottom is still reported on exactly the same inputs. With `Q = S(0)`, the first
+    /// word 0 makes the first addition a doubling, one of the exceptional cases, whether
+    /// that word is written out or produced entirely by padding.
+    #[test]
+    fn streaming_preserves_bottom() {
+        let (x, y) = SINSEMILLA_S[0];
+        let q = pallas::Affine::from_xy(x, y).unwrap().to_curve();
+        let domain = HashDomain::from_Q(q);
+
+        for len in [1, K - 1, K, K + 1, 5 * K] {
+            let msg = vec![false; len];
+            assert!(bool::from(
+                domain.hash_to_point(msg.iter().copied()).is_none()
+            ));
+            assert_same(&domain, &msg);
+        }
+        // A first word other than 0 avoids that case.
+        let mut msg = vec![false; K];
+        msg[0] = true;
+        assert_same(&domain, &msg);
+    }
 
     #[test]
-    fn pad() {
-        assert_eq!(
-            Pad::new([].iter().cloned()).collect::<Vec<_>>(),
-            vec![false; 0]
-        );
-        assert_eq!(
-            Pad::new([true].iter().cloned()).collect::<Vec<_>>(),
-            vec![true, false, false, false, false, false, false, false, false, false]
-        );
-        assert_eq!(
-            Pad::new([true, true].iter().cloned()).collect::<Vec<_>>(),
-            vec![true, true, false, false, false, false, false, false, false, false]
-        );
-        assert_eq!(
-            Pad::new([true, true, true].iter().cloned()).collect::<Vec<_>>(),
-            vec![true, true, true, false, false, false, false, false, false, false]
-        );
-        assert_eq!(
-            Pad::new(
-                [true, true, false, true, false, true, false, true, false, true]
-                    .iter()
-                    .cloned()
-            )
-            .collect::<Vec<_>>(),
-            vec![true, true, false, true, false, true, false, true, false, true]
-        );
-        assert_eq!(
-            Pad::new(
-                [true, true, false, true, false, true, false, true, false, true, true]
-                    .iter()
-                    .cloned()
-            )
-            .collect::<Vec<_>>(),
-            vec![
-                true, true, false, true, false, true, false, true, false, true, true, false, false,
-                false, false, false, false, false, false, false
-            ]
-        );
+    #[should_panic(expected = "longer than K * C bits")]
+    fn rejects_messages_longer_than_k_times_c() {
+        let domain = HashDomain::new("z.cash:test-Sinsemilla");
+        let _ = domain.hash_to_point(core::iter::repeat_n(false, K * C + 1));
     }
 
     #[test]
@@ -330,6 +335,17 @@ mod tests {
             };
             let actual = SINSEMILLA_S[j as usize];
             assert_eq!(computed, actual);
+
+            let point = S_AFFINE[j as usize];
+            assert!(bool::from(point.is_on_curve()));
+            assert_eq!(
+                (
+                    *point.coordinates().unwrap().x(),
+                    *point.coordinates().unwrap().y()
+                ),
+                actual,
+            );
+            assert_eq!(s_generator(j as usize), point);
         }
     }
 }
