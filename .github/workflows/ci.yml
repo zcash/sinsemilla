@@ -37,6 +37,28 @@ jobs:
       - name: Verify working directory is clean
         run: git diff --exit-code
 
+  table-budget:
+    name: Test with a budget covering every tabulated message
+    # The default budgets buy 63 words on macOS and 15 everywhere else, and the messages
+    # the tabulated domains hash are 51, 52 and 109 words. So on every other job the
+    # table evaluator is either untested or tested only on messages no caller sends, and
+    # the lengths that matter reach it on no runner at all.
+    #
+    # 110 rows at 64 KiB is the cap, which covers a note commitment and so all three. The
+    # point is coverage, not a recommended budget: what a target should spend is decided
+    # in `build.rs`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run tests
+        run: cargo test --verbose --locked --release --all-features
+        env:
+          SINSEMILLA_TABLE_LIMIT: 7208960
+      - name: Verify working directory is clean
+        run: git diff --exit-code
+
   test-32-bit:
     name: Test on i686-unknown-linux-gnu with ${{ matrix.features }}
     runs-on: ubuntu-latest
@@ -184,6 +206,7 @@ jobs:
     # own separately-required checks.
     needs:
       - test
+      - table-budget
       - test-32-bit
       - no-std
       - wallet-sdk-targets
