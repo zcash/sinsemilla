@@ -6,6 +6,9 @@
 #[macro_use]
 extern crate alloc;
 
+#[cfg(feature = "std")]
+extern crate std;
+
 use group::{Curve, Wnaf};
 use pasta_curves::{
     arithmetic::{CurveAffine, CurveExt},
@@ -17,6 +20,9 @@ mod addition;
 use self::addition::IncompletePoint;
 mod known_domains;
 mod sinsemilla_s;
+#[cfg(feature = "std")]
+#[cfg_attr(docsrs, doc(cfg(feature = "std")))]
+mod table;
 pub use sinsemilla_s::SINSEMILLA_S;
 
 /// Number of bits of each message piece in $\mathsf{SinsemillaHashToPoint}$
@@ -81,7 +87,20 @@ fn s_generator(j: usize) -> pallas::Affine {
 #[derive(Debug, Clone)]
 #[allow(non_snake_case)]
 pub struct HashDomain {
+    /// $\mathcal{Q}(D)$, the point the accumulator starts from.
+    ///
+    /// Hashed to the curve from the personalization under [`Q_PERSONALIZATION`], except
+    /// for the personalizations the specification fixes, which are read from stored
+    /// constants instead. Both routes give the same point; the stored ones only skip the
+    /// hash-to-curve, which costs more than the hash it sets up.
     Q: pallas::Point,
+    /// The position-weighted tables for this personalization, when it has them.
+    ///
+    /// `None` for every other personalization, and for a domain built with
+    /// [`HashDomain::from_Q`] from a bare $\mathcal{Q}$, which has no personalization to
+    /// look up. Those evaluate the specification's recurrence directly.
+    #[cfg(feature = "std")]
+    tabled: Option<table::TableDomain>,
 }
 
 impl HashDomain {
@@ -91,41 +110,63 @@ impl HashDomain {
             Q: known_domains::q(domain).unwrap_or_else(|| {
                 pallas::Point::hash_to_curve(Q_PERSONALIZATION)(domain.as_bytes())
             }),
+            #[cfg(feature = "std")]
+            tabled: table::TableDomain::new(domain),
         }
     }
 
     /// $\mathsf{SinsemillaHashToPoint}$ from [§ 5.4.1.9][concretesinsemillahash].
     ///
+    /// For a personalization the specification fixes, and a message the position-weighted
+    /// tables cover, this evaluates against those tables instead of the specification's
+    /// recurrence. The result, including which inputs give $\bot$, is unchanged: the
+    /// tables reproduce the exceptional cases rather than skipping them, by rescaling
+    /// [Theorem 5.4.4][theorem544]'s conditions onto the weighted prefix.
+    ///
     /// [concretesinsemillahash]: https://zips.z.cash/protocol/nu5.pdf#concretesinsemillahash
+    /// [theorem544]: https://zips.z.cash/protocol/protocol.pdf#concretesinsemillahash
     pub fn hash_to_point(&self, msg: impl Iterator<Item = bool>) -> CtOption<pallas::Point> {
-        self.hash_to_point_inner(msg).into()
+        self.hash_to_point_impl(msg)
     }
 
-    /// Runs the accumulator over `msg`, reading it a [`K`]-bit word at a time and
-    /// zero-padding the final word, without collecting the message first.
+    /// Splits `msg` into [`K`]-bit words and hashes it, with the tables where they apply.
+    ///
+    /// The message is packed into words before the choice is made, because the choice
+    /// depends on the length and the iterator can only be read once. [`C`] words is the
+    /// longest message the specification allows, so the buffer is a fixed 506 bytes of
+    /// stack and neither path allocates.
     ///
     /// # Panics
     ///
     /// Panics if the message is longer than [`K`] * [`C`] bits.
-    fn hash_to_point_inner(&self, msg: impl Iterator<Item = bool>) -> IncompletePoint {
-        let mut acc = IncompletePoint::from(self.Q);
-        let mut word = 0usize;
+    fn hash_to_point_impl(&self, msg: impl Iterator<Item = bool>) -> CtOption<pallas::Point> {
+        let mut words = [0u16; C];
         let mut len = 0usize;
 
         for bit in msg {
             assert!(len < K * C, "message is longer than K * C bits");
-            word |= usize::from(bit) << (len % K);
+            words[len / K] |= u16::from(bit) << (len % K);
             len += 1;
-            if len.is_multiple_of(K) {
-                acc = acc.double_and_add(s_generator(word));
-                word = 0;
+        }
+        let words = &words[..len.div_ceil(K)];
+
+        #[cfg(feature = "std")]
+        if let Some(tabled) = self.tabled {
+            if (1..=table::LONGEST_MESSAGE_WORDS).contains(&words.len()) {
+                return tabled.hash_to_point(words);
             }
         }
-        if !len.is_multiple_of(K) {
-            acc = acc.double_and_add(s_generator(word));
-        }
 
-        acc
+        self.accumulate(words).into()
+    }
+
+    /// The specification's recurrence, $A_i = \[2\] A_{i-1} \;⸭\; S_{m_i}$, over `words`.
+    fn accumulate(&self, words: &[u16]) -> IncompletePoint {
+        words
+            .iter()
+            .fold(IncompletePoint::from(self.Q), |acc, word| {
+                acc.double_and_add(s_generator(usize::from(*word)))
+            })
     }
 
     /// $\mathsf{SinsemillaHash}$ from [§ 5.4.1.9][concretesinsemillahash].
@@ -146,7 +187,12 @@ impl HashDomain {
     #[cfg_attr(docsrs, doc(cfg(feature = "test-dependencies")))]
     #[allow(non_snake_case)]
     pub fn from_Q(Q: pallas::Point) -> Self {
-        HashDomain { Q }
+        HashDomain {
+            Q,
+            // A bare Q has no personalization, so it never takes the table path.
+            #[cfg(feature = "std")]
+            tabled: None,
+        }
     }
 
     /// Returns the Sinsemilla $Q$ constant for this domain.
@@ -198,7 +244,8 @@ impl CommitDomain {
         r: &pallas::Scalar,
     ) -> CtOption<pallas::Point> {
         // We use complete addition for the blinding factor.
-        CtOption::<pallas::Point>::from(self.M.hash_to_point_inner(msg))
+        self.M
+            .hash_to_point_impl(msg)
             .map(|p| p + Wnaf::new().scalar(r).base(self.R))
     }
 
