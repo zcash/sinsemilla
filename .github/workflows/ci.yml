@@ -37,6 +37,21 @@ jobs:
       - name: Verify working directory is clean
         run: git diff --exit-code
 
+  table-budget:
+    name: Test with a budget covering every tabulated message
+    # Cover all three Orchard message lengths, including the 109-word note commitment.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run tests
+        run: cargo test --verbose --locked --release --all-features
+        env:
+          SINSEMILLA_TABLE_LIMIT: 7208960
+      - name: Verify working directory is clean
+        run: git diff --exit-code
+
   test-32-bit:
     name: Test on i686-unknown-linux-gnu with ${{ matrix.features }}
     runs-on: ubuntu-latest
@@ -174,6 +189,7 @@ jobs:
     # own separately-required checks.
     needs:
       - test
+      - table-budget
       - test-32-bit
       - no-std
       - wallet-sdk-targets

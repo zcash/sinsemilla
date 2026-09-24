@@ -1,5 +1,10 @@
 //! Known-answer tests against the vectors published in [`zcash-test-vectors`].
 //!
+//! Every vendored vector uses a `z.cash:test-Sinsemilla` personalization, which has no
+//! stored $\mathcal{Q}$ and so no position-weighted tables. What pins the table
+//! evaluator to a published answer is `orchard_merkle_parent`, whose personalization is
+//! one of the tabulated ones.
+//!
 //! [`zcash-test-vectors`]: https://github.com/zcash/zcash-test-vectors
 
 mod test_vectors;
@@ -107,6 +112,22 @@ fn orchard_merkle_parent() {
 
     let domain = merkle_crh_domain();
     assert_eq!(merkle_crh(&domain, L, &LEFT, &RIGHT).to_repr(), PARENT);
+
+    // Which evaluator the assertion above exercised depends on the build: `HashDomain`
+    // dispatches a 52-word message to the tables when this target's budget covers 52
+    // words, and to the specification's recurrence when it does not. So on its own it
+    // pins one evaluator on some targets and the other elsewhere, and never both.
+    //
+    // `from_Q` carries no personalization and so never reaches the tables. Checking it
+    // against the same published constant pins the specification's recurrence on every
+    // target, and pins the two evaluators against each other wherever the budget does
+    // cover a Merkle parent hash. The `table-budget` CI job exists to make sure that is
+    // somewhere.
+    #[cfg(feature = "test-dependencies")]
+    {
+        let untabled = HashDomain::from_Q(domain.Q());
+        assert_eq!(merkle_crh(&untabled, L, &LEFT, &RIGHT).to_repr(), PARENT);
+    }
 
     // The layer index is part of the message, so a different layer is a different hash.
     assert_ne!(merkle_crh(&domain, L + 1, &LEFT, &RIGHT).to_repr(), PARENT);
