@@ -13,6 +13,11 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/zcash/sinsemilla"
 categories = ["cryptography"]
 
+# Include feature-gated APIs and label them with their required features.
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = ["--cfg", "docsrs"]
+
 [dependencies]
 group = "0.14"
 pasta_curves = { version = "0.6", default-features = false, features = ["alloc"] }
