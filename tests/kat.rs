@@ -44,8 +44,8 @@ const MERKLE_CRH_BITS: usize = K + 2 * L_MERKLE;
 
 /// The hash domain of $\mathsf{MerkleCRH^{Orchard}}$.
 ///
-/// Constructing this performs a hash-to-curve, so callers that measure or repeat the
-/// hash should build it once and reuse it.
+/// Its $Q$ is one of the precomputed constants, so this pins the stored point against the
+/// published vector end to end.
 fn merkle_crh_domain() -> HashDomain {
     HashDomain::new(MERKLE_CRH_PERSONALIZATION)
 }
