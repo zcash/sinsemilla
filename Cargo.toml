@@ -23,6 +23,7 @@ criterion = { version = "0.8.2", default-features = false, features = ["cargo_be
 rand = "0.10"
 
 [features]
+std = []
 test-dependencies = []
 
 [[bench]]
