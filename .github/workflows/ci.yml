@@ -97,19 +97,9 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      # The toolchain repository has no release tags, so pin the `master` branch
-      # and select the version through the `toolchain` input.
+      # The MSRV comes from rust-toolchain.toml, which the GitHub runner's rustup
+      # automatically ensures is used.
       #
-      # Keep this version in step with `rust-version` in Cargo.toml. The point of
-      # the job is that the declared MSRV is checked rather than merely asserted.
-      - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772 # master
-        id: toolchain
-        with:
-          toolchain: "1.88.0"
-      - run: rustup override set "${TOOLCHAIN}"
-        shell: sh
-        env:
-          TOOLCHAIN: ${{ steps.toolchain.outputs.name }}
       # `--locked` so the committed lockfile is what gets exercised; a resolver
       # that silently upgrades a dependency would hide an MSRV regression in it.
       - name: Run tests
