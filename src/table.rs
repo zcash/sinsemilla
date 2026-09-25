@@ -141,19 +141,39 @@ const ROW_BYTES: usize = S_LEN * core::mem::size_of::<pallas::Affine>();
 /// [`C`]: crate::C
 const LONGEST_WORTH_COVERING: usize = 109;
 
-/// Default budget for this target, in bytes, chosen by the build script.
+/// Default budget for the generator table, in bytes, sized to the private L2 the table
+/// has to share with the caller's own working set.
 ///
-/// Reproducing $\bot$ forces one row per weight (see the module documentation), so the
-/// budget buys message LENGTH directly: `budget / 64 KiB` rows cover one word fewer than
-/// that. The lengths that matter are 51 words for `CommitIvk`, 52 for a Merkle parent
-/// hash, and 109 for a note commitment. See `build.rs` for the per-target figures and
-/// what they are sized against.
-const DEFAULT_TABLE_LIMIT: usize = parse_usize(env!("SINSEMILLA_DEFAULT_TABLE_LIMIT"));
+/// The hardware figures describe the market as of September 2026 and will date.
+///
+/// - Android: the phones sold in the largest numbers run most of their cores as
+///   Cortex-A55, whose private L2 is typically 128 KiB (Arm allows 64 to 256 KiB), and
+///   the scheduler may place a wallet on one of them.
+/// - iOS: every iPhone chip since the A13 has 2 performance and 4 efficiency cores, none
+///   with private L2. The efficiency cores share 4 to 8 MiB between four of them, about
+///   1 MiB each, and a wallet syncing in the background is likely to run there. So iOS
+///   takes the same budget as the default rather than the full table macOS gets.
+/// - macOS: Apple silicon from M2 onwards shares 16 MiB of L2 between four performance
+///   cores, so one core's share is 4 MiB.
+/// - Everything else: private per-core L2 is 512 KiB on AMD Zen 3, 1 MiB on Zen 4 and Zen
+///   5 and on Arm Neoverse N1, V1 and N2, and 1.25 to 2 MiB on recent Intel. 1 MiB is not
+///   the smallest of those, so this is a trade-off rather than a guarantee.
+///
+/// A budget covers `budget / 64 KiB - 1` words. The tabulated domains hash 51 words for
+/// `CommitIvk`, 52 for a Merkle parent hash and 109 for a note commitment, so these
+/// budgets cover 63 words on macOS, 15 elsewhere and 1 on Android: macOS reaches the
+/// first two, and no target reaches the note commitment. Raising the macOS budget to
+/// 6.875 MiB, 110 rows, would cover all three; that is two of the four to five cores'
+/// share of the 16 MiB an Apple silicon cluster shares, rather than one.
+#[cfg(target_os = "android")]
+const DEFAULT_TABLE_LIMIT: usize = 128 << 10;
+#[cfg(target_os = "macos")]
+const DEFAULT_TABLE_LIMIT: usize = 4 << 20;
+#[cfg(not(any(target_os = "android", target_os = "macos")))]
+const DEFAULT_TABLE_LIMIT: usize = 1 << 20;
 
 /// The table budget for this build, in bytes.
 pub const TABLE_LIMIT: usize = match option_env!("SINSEMILLA_TABLE_LIMIT") {
-    // An exported-but-empty variable reads as unset rather than as a build failure, since
-    // that is what a shell leaves behind after `SINSEMILLA_TABLE_LIMIT=`.
     Some(limit) if !limit.is_empty() => parse_usize(limit),
     _ => DEFAULT_TABLE_LIMIT,
 };
