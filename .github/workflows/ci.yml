@@ -37,6 +37,28 @@ jobs:
       - name: Verify working directory is clean
         run: git diff --exit-code
 
+  table-budget:
+    name: Test with a budget covering every tabulated message
+    # The default budgets buy 63 words on macOS and 15 everywhere else, and the messages
+    # the tabulated domains hash are 51, 52 and 109 words. So on every other job the
+    # table evaluator is either untested or tested only on messages no caller sends, and
+    # the lengths that matter reach it on no runner at all.
+    #
+    # 110 rows at 64 KiB is the cap, which covers a note commitment and so all three. The
+    # point is coverage, not a recommended budget: what a target should spend is decided
+    # in `build.rs`.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Run tests
+        run: cargo test --verbose --locked --release --all-features
+        env:
+          SINSEMILLA_TABLE_LIMIT: 7208960
+      - name: Verify working directory is clean
+        run: git diff --exit-code
+
   test-32-bit:
     name: Test on i686-unknown-linux-gnu with ${{ matrix.features }}
     runs-on: ubuntu-latest
@@ -71,6 +93,10 @@ jobs:
       matrix:
         target:
           - thumbv6m-none-eabi
+          # Cortex-M4F with hardware float, which the Keystone3 hardware wallet
+          # builds for. It is not covered by thumbv6m: that is ARMv6-M, without
+          # the ARMv7E-M instructions or the FPU.
+          - thumbv7em-none-eabihf
           - wasm32-unknown-unknown
           - wasm32-wasip1
     steps:
@@ -87,6 +113,41 @@ jobs:
           --locked
           --target "${TARGET}"
           --no-default-features
+        env:
+          TARGET: ${{ matrix.target }}
+
+  wallet-sdk-targets:
+    name: Check wallet SDK target ${{ matrix.target }}
+    # The Zcash mobile wallet SDKs ship on these targets, and no test job runs on most
+    # of them, so at least compile the library for each.
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - aarch64-linux-android
+          - armv7-linux-androideabi
+          - i686-linux-android
+          - x86_64-linux-android
+          - aarch64-apple-ios
+          - aarch64-apple-ios-sim
+          - x86_64-apple-ios
+          - aarch64-apple-darwin
+          - x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup target add "${TARGET}"
+        env:
+          TARGET: ${{ matrix.target }}
+      # `--lib` only: the dev-dependencies build C code through `cc`, which needs
+      # the target's toolchain (the NDK, or an Apple SDK) that this runner lacks.
+      # `--all-features` because the wallet SDKs ship with `std`, and this is the
+      # only job that compiles the lookup tables for a mobile target, where their
+      # size budget differs from the default.
+      - name: Check
+        run: cargo check --verbose --lib --all-features --target "${TARGET}"
         env:
           TARGET: ${{ matrix.target }}
 
@@ -145,8 +206,10 @@ jobs:
     # own separately-required checks.
     needs:
       - test
+      - table-budget
       - test-32-bit
       - no-std
+      - wallet-sdk-targets
       - msrv
     # `always()` is load-bearing: without it this job is skipped when a needed
     # job fails, and GitHub treats a skipped required check as satisfied.
@@ -170,4 +233,4 @@ jobs:
           persist-credentials: false
       # Build benchmarks to prevent bitrot
       - name: Build benchmarks
-        run: cargo build --all --benches
+        run: cargo build --all --benches --all-features
