@@ -10,7 +10,7 @@ and this project adheres to Rust's notion of
 ## [0.2.0] - 2026-09-25
 ### Added
 - `sinsemilla::CommitDomain::new_with_separate_domains`
-- The `std` feature, which is not enabled by default. It makes
+- The `runtime-precomputation` feature, which is not enabled by default. It makes
   `HashDomain::hash_to_point`, `HashDomain::hash`, `CommitDomain::commit` and
   `CommitDomain::short_commit` faster for the personalizations listed below, by
   evaluating them against lookup tables built on first use. The budget for those
