@@ -310,8 +310,9 @@ dependencies = [
 
 [[package]]
 name = "pasta_curves"
-version = "0.5.2"
-source = "git+https://github.com/zcash/pasta_curves.git?rev=6aac244ffd28d4f704ef873ceb8c374610d328ec#6aac244ffd28d4f704ef873ceb8c374610d328ec"
+version = "0.6.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7ec2f82051d06ea52d7ec6a47546c592fc52392b6040e503e05a764dd10dd1de"
 dependencies = [
  "blake2b_simd",
  "ff",

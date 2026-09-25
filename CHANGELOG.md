@@ -11,7 +11,7 @@ and this project adheres to Rust's notion of
 
 ### Changed
 - MSRV is now 1.88.
-- Migrated to `ff 0.14` and `group 0.14`.
+- Migrated to `ff 0.14`, `group 0.14`, `pasta_curves 0.6`.
 - `sinsemilla::SINSEMILLA_S` is now a `static` instead of a `const`. It can no
   longer be used in a const context.
 
