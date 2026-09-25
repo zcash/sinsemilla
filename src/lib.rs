@@ -79,8 +79,16 @@ fn extract_p(point: pallas::Point) -> pallas::Base {
 }
 
 /// The Sinsemilla generator $\mathcal{S}(j)$ as an affine point, for `j` < $2^K$.
+///
+/// The coordinates are read straight out of [`sinsemilla_s::SINSEMILLA_S`] with
+/// `from_xy_unchecked`, so the point is assembled for free. Checking instead that each
+/// pair is on the curve costs a square, two multiplications and a comparison per
+/// message word, about a tenth of a Sinsemilla hash, to re-establish something the
+/// `sinsemilla_s` test already pins: every stored pair equals a fresh hash to the
+/// curve, hence is on it.
 fn s_generator(j: usize) -> pallas::Affine {
-    sinsemilla_s::S_AFFINE[j]
+    let (x, y) = sinsemilla_s::SINSEMILLA_S[j];
+    pallas::Affine::from_xy_unchecked(x, y)
 }
 
 /// A domain in which $\mathsf{SinsemillaHashToPoint}$ and $\mathsf{SinsemillaHash}$ can
@@ -282,7 +290,7 @@ impl CommitDomain {
 mod tests {
     use alloc::vec::Vec;
 
-    use super::sinsemilla_s::{SINSEMILLA_S, S_AFFINE};
+    use super::sinsemilla_s::SINSEMILLA_S;
     use super::{lebs2ip_k, s_generator, HashDomain, IncompletePoint, C, K};
     use group::{Curve, CurveAffine as _};
     use pasta_curves::{
@@ -384,7 +392,9 @@ mod tests {
             let actual = SINSEMILLA_S[j as usize];
             assert_eq!(computed, actual);
 
-            let point = S_AFFINE[j as usize];
+            // `s_generator` skips the on-curve check, so check it here instead: this is
+            // what licenses `from_xy_unchecked` on these coordinates.
+            let point = s_generator(j as usize);
             assert!(bool::from(point.is_on_curve()));
             assert_eq!(
                 (
@@ -393,7 +403,6 @@ mod tests {
                 ),
                 actual,
             );
-            assert_eq!(s_generator(j as usize), point);
         }
     }
 }

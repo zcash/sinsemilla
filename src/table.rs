@@ -123,7 +123,7 @@ use pasta_curves::{
 };
 use subtle::{Choice, ConstantTimeEq, CtOption};
 
-use crate::{known_domains, sinsemilla_s, K, Q_PERSONALIZATION};
+use crate::{known_domains, s_generator, K, Q_PERSONALIZATION};
 
 /// Number of Sinsemilla generators, which is the number of entries in a table row.
 const S_LEN: usize = 1 << K;
@@ -252,16 +252,14 @@ impl Tables {
     fn build() -> Self {
         // One row per weight, each the row below doubled. Doubling a whole row at a time
         // shares the work across its entries, and one batch inversion normalizes each row.
-        // Row 0 is the generator set itself, which is stored affine already.
-        let mut weighted: Vec<pallas::Point> = sinsemilla_s::S_AFFINE
-            .iter()
-            .map(|point| point.to_curve())
-            .collect();
+        // Row 0 is the generator set itself, which is stored already.
+        let row_0: Vec<pallas::Affine> = (0..S_LEN).map(s_generator).collect();
+        let mut weighted: Vec<pallas::Point> = row_0.iter().map(|point| point.to_curve()).collect();
 
         let mut generators = Vec::with_capacity(WEIGHTS);
         for w in 0..WEIGHTS {
             generators.push(if w == 0 {
-                sinsemilla_s::S_AFFINE.to_vec()
+                row_0.clone()
             } else {
                 for point in weighted.iter_mut() {
                     *point = point.double();
