@@ -4,7 +4,7 @@
 
 mod test_vectors;
 
-use group::{ff::PrimeField, GroupEncoding};
+use group::{GroupEncoding, ff::PrimeField};
 use pasta_curves::pallas;
 use sinsemilla::{HashDomain, K};
 
