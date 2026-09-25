@@ -100,7 +100,7 @@ pub struct HashDomain {
     /// `None` for every other personalization, and for a domain built with
     /// [`HashDomain::from_Q`] from a bare $\mathcal{Q}$, which has no personalization to
     /// look up. Those evaluate the specification's recurrence directly.
-    #[cfg(feature = "std")]
+    #[cfg(feature = "runtime-precomputation")]
     tabled: Option<table::TableDomain>,
 }
 
@@ -111,7 +111,7 @@ impl HashDomain {
             Q: known_domains::q(domain).unwrap_or_else(|| {
                 pallas::Point::hash_to_curve(Q_PERSONALIZATION)(domain.as_bytes())
             }),
-            #[cfg(feature = "std")]
+            #[cfg(feature = "runtime-precomputation")]
             tabled: table::TableDomain::new(domain),
         }
     }
@@ -151,7 +151,7 @@ impl HashDomain {
         }
         let words = &words[..len.div_ceil(K)];
 
-        #[cfg(feature = "std")]
+        #[cfg(feature = "runtime-precomputation")]
         if let Some(tabled) = self.tabled {
             if (1..=table::LONGEST_MESSAGE_WORDS).contains(&words.len()) {
                 return tabled.hash_to_point(words);
@@ -191,7 +191,7 @@ impl HashDomain {
         HashDomain {
             Q,
             // A bare Q has no personalization, so it never takes the table path.
-            #[cfg(feature = "std")]
+            #[cfg(feature = "runtime-precomputation")]
             tabled: None,
         }
     }
