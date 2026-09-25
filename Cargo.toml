@@ -2,8 +2,8 @@
 name = "sinsemilla"
 version = "0.1.0"
 authors = [
-    "Jack Grigg <jack@electriccoin.co>",
-    "Kris Nuttycombe <kris@electriccoin.co>",
+    "Jack Grigg <jack@zodl.com>",
+    "Kris Nuttycombe <kris@zodl.com>",
     "Ying Tong Lai",
 ]
 edition = "2021"
