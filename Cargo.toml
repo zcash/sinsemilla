@@ -1,6 +1,6 @@
 [package]
 name = "sinsemilla"
-version = "0.1.0"
+version = "0.2.0"
 authors = [
     "Jack Grigg <jack@zodl.com>",
     "Kris Nuttycombe <kris@zodl.com>",
