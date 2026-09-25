@@ -6,7 +6,7 @@ authors = [
     "Kris Nuttycombe <kris@zodl.com>",
     "Ying Tong Lai",
 ]
-edition = "2021"
+edition = "2024"
 rust-version = "1.88"
 description = "A collision-resistant circuit-efficient hash function"
 license = "MIT OR Apache-2.0"

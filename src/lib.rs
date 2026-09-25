@@ -268,7 +268,7 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::sinsemilla_s::SINSEMILLA_S;
-    use super::{Pad, K};
+    use super::{K, Pad};
     use group::Curve;
     use pasta_curves::{
         arithmetic::{CurveAffine, CurveExt},
@@ -283,30 +283,42 @@ mod tests {
         );
         assert_eq!(
             Pad::new([true].iter().cloned()).collect::<Vec<_>>(),
-            vec![true, false, false, false, false, false, false, false, false, false]
+            vec![
+                true, false, false, false, false, false, false, false, false, false
+            ]
         );
         assert_eq!(
             Pad::new([true, true].iter().cloned()).collect::<Vec<_>>(),
-            vec![true, true, false, false, false, false, false, false, false, false]
+            vec![
+                true, true, false, false, false, false, false, false, false, false
+            ]
         );
         assert_eq!(
             Pad::new([true, true, true].iter().cloned()).collect::<Vec<_>>(),
-            vec![true, true, true, false, false, false, false, false, false, false]
+            vec![
+                true, true, true, false, false, false, false, false, false, false
+            ]
         );
         assert_eq!(
             Pad::new(
-                [true, true, false, true, false, true, false, true, false, true]
-                    .iter()
-                    .cloned()
+                [
+                    true, true, false, true, false, true, false, true, false, true
+                ]
+                .iter()
+                .cloned()
             )
             .collect::<Vec<_>>(),
-            vec![true, true, false, true, false, true, false, true, false, true]
+            vec![
+                true, true, false, true, false, true, false, true, false, true
+            ]
         );
         assert_eq!(
             Pad::new(
-                [true, true, false, true, false, true, false, true, false, true, true]
-                    .iter()
-                    .cloned()
+                [
+                    true, true, false, true, false, true, false, true, false, true, true
+                ]
+                .iter()
+                .cloned()
             )
             .collect::<Vec<_>>(),
             vec![

@@ -7,10 +7,10 @@
 
 use std::hint::black_box;
 
-use criterion::{criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
+use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use group::ff::Field;
 use pasta_curves::pallas;
-use sinsemilla::{CommitDomain, HashDomain, C, K};
+use sinsemilla::{C, CommitDomain, HashDomain, K};
 
 /// Length in bits of a Merkle parent hash: 52 [`K`]-bit words.
 const MERKLE_HASH_BITS: usize = 52 * K;
