@@ -123,13 +123,13 @@ use pasta_curves::{
 };
 use subtle::{Choice, ConstantTimeEq, CtOption};
 
-use crate::{K, Q_PERSONALIZATION, known_domains, s_generator};
+use crate::{K, Q_PERSONALIZATION, SINSEMILLA_S, known_domains};
 
 /// Number of Sinsemilla generators, which is the number of entries in a table row.
 const S_LEN: usize = 1 << K;
 
 /// Bytes in one weight row of the generator table.
-const ROW_BYTES: usize = S_LEN * core::mem::size_of::<pallas::Affine>();
+const ROW_BYTES: usize = S_LEN * core::mem::size_of::<Entry>();
 
 /// Longest message worth covering, in [`K`]-bit words.
 ///
@@ -236,7 +236,7 @@ pub const KNOWN_DOMAINS: [&str; 3] = [
 /// The generator table and the per-domain start points.
 struct Tables {
     /// `generators[w][j]` is $\[2^w\] S_j$.
-    generators: Vec<Vec<pallas::Affine>>,
+    generators: Vec<Vec<Entry>>,
     /// `starts[d][n - 1]` is $\[2^n\] \mathcal{Q}_d$ for the `d`th of [`KNOWN_DOMAINS`].
     starts: Vec<Vec<pallas::Affine>>,
 }
@@ -253,8 +253,11 @@ impl Tables {
         // One row per weight, each the row below doubled. Doubling a whole row at a time
         // shares the work across its entries, and one batch inversion normalizes each row.
         // Row 0 is the generator set itself, which is stored already.
-        let row_0: Vec<pallas::Affine> = (0..S_LEN).map(s_generator).collect();
-        let mut weighted: Vec<pallas::Point> = row_0.iter().map(|point| point.to_curve()).collect();
+        let row_0: Vec<Entry> = SINSEMILLA_S.iter().map(|&(x, y)| Entry { x, y }).collect();
+        let mut weighted: Vec<pallas::Point> = row_0
+            .iter()
+            .map(|entry| entry.affine().to_curve())
+            .collect();
 
         let mut generators = Vec::with_capacity(WEIGHTS);
         for w in 0..WEIGHTS {
@@ -266,7 +269,7 @@ impl Tables {
                 }
                 let mut row = vec![pallas::Affine::default(); S_LEN];
                 pallas::Point::batch_normalize(&weighted, &mut row);
-                row
+                row.iter().map(Entry::from).collect()
             });
         }
 
@@ -298,6 +301,35 @@ impl Tables {
 
 static TABLES: LazyLock<Tables> = LazyLock::new(Tables::build);
 
+/// Generator-table entry: affine $(x, y)$ of a weighted generator (on curve, never the identity)
+///
+/// - Raw coordinates (`coordinates()` on a stored `pallas::Affine` = constant-time identity test)
+/// - [`Entry::affine`] free (`from_xy_unchecked`; every entry pinned by
+///   `generator_entries_are_the_weighted_generators`)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Entry {
+    x: pallas::Base,
+    y: pallas::Base,
+}
+
+impl Entry {
+    fn affine(&self) -> pallas::Affine {
+        pallas::Affine::from_xy_unchecked(self.x, self.y)
+    }
+}
+
+impl From<&pallas::Affine> for Entry {
+    fn from(point: &pallas::Affine) -> Self {
+        let coordinates = point
+            .coordinates()
+            .expect("a weighted generator is not the identity");
+        Entry {
+            x: *coordinates.x(),
+            y: *coordinates.y(),
+        }
+    }
+}
+
 /// Whether `p` has the affine $x$-coordinate of `target`, equivalently whether
 /// $p = \pm \mathsf{target}$.
 ///
@@ -308,11 +340,10 @@ static TABLES: LazyLock<Tables> = LazyLock::new(Tables::build);
 /// identity the answer is meaningless, which is harmless here: `p` is the accumulator, and
 /// the accumulator can only reach the identity at a position whose own test already fired
 /// (see [`TableDomain::hash_to_point`]).
-fn has_x_of(p: &pallas::Point, target: &pallas::Affine) -> Choice {
+fn has_x_of(p: &pallas::Point, target: &Entry) -> Choice {
     let (x, _, z) = p.jacobian_coordinates();
-    let target_x = *target.coordinates().unwrap().x();
 
-    x.ct_eq(&(target_x * z.square()))
+    x.ct_eq(&(target.x * z.square()))
 }
 
 /// A hash domain that has a start table, and so can be hashed with the tables.
@@ -382,7 +413,7 @@ impl TableDomain {
             let doubled = &TABLES.generators[n - i][word];
 
             exceptional |= has_x_of(&acc, doubled);
-            acc += addend;
+            acc += addend.affine();
             exceptional |= acc.is_identity();
         }
 
@@ -398,8 +429,8 @@ mod tests {
     use pasta_curves::{arithmetic::CurveExt, pallas};
 
     use super::{
-        KNOWN_DOMAINS, LONGEST_MESSAGE_WORDS, ROW_BYTES, TABLE_LIMIT, TABLES, TableDomain, Tables,
-        WEIGHTS, has_x_of,
+        Entry, KNOWN_DOMAINS, LONGEST_MESSAGE_WORDS, ROW_BYTES, TABLE_LIMIT, TABLES, TableDomain,
+        Tables, WEIGHTS, has_x_of,
     };
     use crate::{HashDomain, K, Q_PERSONALIZATION, S_PERSONALIZATION};
 
@@ -557,7 +588,7 @@ mod tests {
         for (weight, row) in TABLES.generators.iter().enumerate() {
             for (w, (entry, expected)) in row.iter().zip(expected.iter()).enumerate() {
                 assert_eq!(
-                    entry.to_curve().to_bytes(),
+                    entry.affine().to_curve().to_bytes(),
                     expected.to_bytes(),
                     "entry {w}, weight 2^{weight}",
                 );
@@ -614,17 +645,23 @@ mod tests {
         let p = s(&7u32.to_le_bytes());
         let other = s(&8u32.to_le_bytes());
 
-        assert!(bool::from(has_x_of(&p, &p.to_affine())));
-        assert!(bool::from(has_x_of(&(-p), &p.to_affine())));
-        assert!(!bool::from(has_x_of(&other, &p.to_affine())));
-        assert!(!bool::from(has_x_of(&p.double(), &p.to_affine())));
+        assert!(bool::from(has_x_of(&p, &Entry::from(&p.to_affine()))));
+        assert!(bool::from(has_x_of(&(-p), &Entry::from(&p.to_affine()))));
+        assert!(!bool::from(has_x_of(&other, &Entry::from(&p.to_affine()))));
+        assert!(!bool::from(has_x_of(
+            &p.double(),
+            &Entry::from(&p.to_affine())
+        )));
 
         // The accumulator is Jacobian with a non-trivial Z, which is the case the
         // `X == x * Z^2` form exists for; a test that only ever passed Z = 1 would not
         // exercise it.
         let jacobian = p + other - other;
         assert_ne!(jacobian.jacobian_coordinates().2, pallas::Base::one());
-        assert!(bool::from(has_x_of(&jacobian, &p.to_affine())));
+        assert!(bool::from(has_x_of(
+            &jacobian,
+            &Entry::from(&p.to_affine())
+        )));
     }
 
     /// The table built is the shape the budget bought.
