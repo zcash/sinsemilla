@@ -6,6 +6,15 @@ and this project adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- `sinsemilla::HashDomain::hash_many_vartime`, which hashes many public messages
+  in one domain, in order, with the same results as `HashDomain::hash`. Each
+  message is given as `[u16; N]`, its `K`-bit words. With
+  `runtime-precomputation`, messages that the tables cover are evaluated
+  together: from 8 messages on affine accumulators, with one inversion per word
+  shared across all of them, and below that on Jacobian accumulators, with one
+  inversion shared at the end. This is variable time, so it is only for public
+  inputs such as Merkle tree nodes.
 
 ## [0.2.0] - 2026-09-25
 ### Added
