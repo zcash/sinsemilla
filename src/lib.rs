@@ -10,7 +10,9 @@ extern crate alloc;
 #[cfg(feature = "std")]
 extern crate std;
 
-use group::{Curve, Wnaf};
+use alloc::vec::Vec;
+
+use group::{Curve, Group, Wnaf};
 use pasta_curves::{
     arithmetic::{CurveAffine, CurveExt},
     pallas,
@@ -157,8 +159,11 @@ impl HashDomain {
             words[len / K] |= u16::from(bit) << (len % K);
             len += 1;
         }
-        let words = &words[..len.div_ceil(K)];
+        self.hash_words(&words[..len.div_ceil(K)])
+    }
 
+    /// [`HashDomain::hash_to_point`] over already-packed words
+    fn hash_words(&self, words: &[u16]) -> CtOption<pallas::Point> {
         #[cfg(feature = "runtime-precomputation")]
         if let Some(tabled) = self.tabled {
             if (1..=table::LONGEST_MESSAGE_WORDS).contains(&words.len()) {
@@ -187,6 +192,56 @@ impl HashDomain {
     /// This panics if the message length is greater than [`K`] * [`C`]
     pub fn hash(&self, msg: impl Iterator<Item = bool>) -> CtOption<pallas::Base> {
         extract_p_bottom(self.hash_to_point(msg))
+    }
+
+    /// [`HashDomain::hash`] of each `N`-word message, in order (public messages only)
+    ///
+    /// - Word `i` = [`lebs2ip_k`] of message bits `K·i .. K·(i+1)` (final word zero-padded, as
+    ///   the specification pads)
+    /// - Variable time: public inputs only, such as Merkle tree nodes
+    /// - $\bot$ on exactly the specification's inputs (tabled paths proved in sinsemilla-proofs,
+    ///   `weightedHashToPoint_eq_hashToPoint`; the fallback is [`HashDomain::hash_to_point`])
+    /// - Messages the tables cover: affine accumulators stepped together (one shared inversion
+    ///   per word), or Jacobian ones below a lockstep's worth of messages
+    /// - Otherwise: [`HashDomain::hash_to_point`] per message, one shared inversion
+    ///
+    /// # Panics
+    ///
+    /// Panics if `N` > [`C`] or a word is not a [`K`]-bit value.
+    pub fn hash_many_vartime<const N: usize>(
+        &self,
+        messages: &[[u16; N]],
+    ) -> Vec<CtOption<pallas::Base>> {
+        assert!(N <= C, "message is longer than K * C bits");
+        let words = messages.as_flattened();
+        assert!(
+            words.iter().all(|&word| usize::from(word) < 1 << K),
+            "word is not a K-bit value"
+        );
+
+        #[cfg(feature = "runtime-precomputation")]
+        if let Some(tabled) = self.tabled
+            && (1..=table::LONGEST_MESSAGE_WORDS).contains(&N)
+        {
+            return tabled.hash_many_vartime(words, N);
+        }
+
+        let points: Vec<CtOption<pallas::Point>> =
+            messages.iter().map(|msg| self.hash_words(msg)).collect();
+        let projective: Vec<pallas::Point> = points
+            .iter()
+            .map(|point| point.unwrap_or(pallas::Point::identity()))
+            .collect();
+        let mut affine = vec![pallas::Affine::default(); projective.len()];
+        pallas::Point::batch_normalize(&projective, &mut affine);
+        points
+            .iter()
+            .zip(affine)
+            .map(|(point, affine)| {
+                let x = affine.coordinates().map(|c| *c.x());
+                CtOption::new(x.unwrap_or_else(pallas::Base::zero), point.is_some())
+            })
+            .collect()
     }
 
     /// Constructs a new `HashDomain` from a given `Q`.
@@ -292,7 +347,7 @@ mod tests {
 
     use super::sinsemilla_s::SINSEMILLA_S;
     use super::{C, HashDomain, IncompletePoint, K, lebs2ip_k, s_generator};
-    use group::{Curve, CurveAffine as _};
+    use group::{Curve, CurveAffine as _, Group};
     use pasta_curves::{
         arithmetic::{CurveAffine, CurveExt},
         pallas,
@@ -404,5 +459,87 @@ mod tests {
                 actual,
             );
         }
+    }
+
+    /// Lockstep, Jacobian (tabled, by width) and per-message fallback alike, vs `hash` on the bits
+    #[test]
+    fn hash_many_vartime_equals_hash_per_message() {
+        let domains = [
+            ("MerkleCRH", HashDomain::new("z.cash:Orchard-MerkleCRH")),
+            ("untabled", HashDomain::new("z.cash:test-Sinsemilla")),
+            ("Q = S_0", HashDomain::from_Q(s_generator(0).to_curve())),
+            (
+                "Q = identity",
+                HashDomain::from_Q(pallas::Point::identity()),
+            ),
+        ];
+        // word i of message m: K bits of the stream seeded m + 1
+        let merkle: Vec<[u16; 52]> = (0..65)
+            .map(|m| {
+                let bits = bits(m + 1, 52 * K);
+                core::array::from_fn(|i| {
+                    lebs2ip_k(bits[K * i..K * (i + 1)].try_into().unwrap()) as u16
+                })
+            })
+            .collect();
+        let one_word: Vec<[u16; 1]> = merkle.iter().map(|msg| [msg[0]]).collect();
+        let to_bits = |msg: &[u16]| -> Vec<bool> {
+            msg.iter()
+                .flat_map(|w| (0..K).map(move |i| (w >> i) & 1 == 1))
+                .collect()
+        };
+
+        for (name, domain) in &domains {
+            // 8 = `table::LOCKSTEP_LANES` (Jacobian below, lockstep from, given a 52-word budget)
+            for count in [0, 1, 7, 8, 65] {
+                let msgs = &merkle[..count];
+                let expected: Vec<Option<pallas::Base>> = msgs
+                    .iter()
+                    .map(|m| domain.hash(to_bits(m).into_iter()).into())
+                    .collect();
+                let actual: Vec<Option<pallas::Base>> = domain
+                    .hash_many_vartime(msgs)
+                    .into_iter()
+                    .map(Option::from)
+                    .collect();
+                assert_eq!(actual, expected, "{name}, {count} Merkle messages");
+            }
+            let expected: Vec<Option<pallas::Base>> = one_word
+                .iter()
+                .map(|m| domain.hash(to_bits(m).into_iter()).into())
+                .collect();
+            let actual: Vec<Option<pallas::Base>> = domain
+                .hash_many_vartime(&one_word)
+                .into_iter()
+                .map(Option::from)
+                .collect();
+            assert_eq!(actual, expected, "{name}, 65 one-word messages");
+            let empty: Option<pallas::Base> = domain.hash(core::iter::empty()).into();
+            let actual: Vec<Option<pallas::Base>> = domain
+                .hash_many_vartime(&[[]; 2])
+                .into_iter()
+                .map(Option::from)
+                .collect();
+            assert_eq!(actual, [empty; 2], "{name}, empty messages");
+        }
+
+        // ⊥ keeps its position (Q = S_0 then word 0 = doubling); valid identity → x = 0
+        let [_, _, (_, s_0), (_, identity)] = &domains;
+        let s_0_hashes = s_0.hash_many_vartime(&[[1023], [0], [1023]]);
+        assert_eq!(
+            s_0_hashes
+                .iter()
+                .map(|h| bool::from(h.is_some()))
+                .collect::<Vec<_>>(),
+            [true, false, true]
+        );
+        let identity_hash = identity.hash_many_vartime(&[[]])[0];
+        assert_eq!(Option::from(identity_hash), Some(pallas::Base::zero()));
+    }
+
+    #[test]
+    #[should_panic(expected = "word is not a K-bit value")]
+    fn hash_many_vartime_refuses_a_word_past_k_bits() {
+        HashDomain::new("z.cash:Orchard-MerkleCRH").hash_many_vartime(&[[1 << K]]);
     }
 }

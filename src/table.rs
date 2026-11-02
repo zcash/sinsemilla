@@ -86,6 +86,11 @@
 //! The test reads $P_{i-1}$, the prefix through position $i-1$, which the evaluation only
 //! holds if it adds one position at a time. That is what requires one row per weight.
 //!
+//! Machine-checked in [sinsemilla-proofs] against Ironwood's specification-level `hashToPoint`:
+//! `weightedHashToPoint_eq_hashToPoint` (this evaluator, $\bot$ included),
+//! `laneStep_eq_weightedStep` / `affine_jacobianStep` (the variable-time paths)
+//!
+//! [sinsemilla-proofs]: https://github.com/zingolabs/sinsemilla-proofs
 //! [theorem544]: https://zips.z.cash/protocol/protocol.pdf#concretesinsemillahash
 //! [`HashDomain::from_Q`]: crate::HashDomain::from_Q
 //!
@@ -116,9 +121,9 @@
 use alloc::{vec, vec::Vec};
 use std::sync::LazyLock;
 
-use group::{Curve, CurveAffine as _, Group};
+use group::{Curve, CurveAffine as _, Group, ff::Field};
 use pasta_curves::{
-    arithmetic::{CurveAffine as _, CurveExt},
+    arithmetic::{CurveAffine as _, CurveExt, VartimeField},
     pallas,
 };
 use subtle::{Choice, ConstantTimeEq, CtOption};
@@ -380,7 +385,8 @@ impl TableDomain {
     /// words, least-significant bit first within each word.
     ///
     /// Returns $\bot$ on exactly the inputs the specification does; see
-    /// "Reproducing $\bot$" in the module documentation.
+    /// "Reproducing $\bot$" in the module documentation. Proved in sinsemilla-proofs:
+    /// `weightedHashToPoint_eq_hashToPoint`
     ///
     /// # Panics
     ///
@@ -419,18 +425,266 @@ impl TableDomain {
 
         CtOption::new(acc, !exceptional)
     }
+
+    /// Variable-time $x$ of [`TableDomain::hash_to_point`], per `n`-word message in `words`
+    ///
+    /// - All messages stepped together on affine accumulators: one batch inversion per word,
+    ///   no per-message normalization
+    /// - $\bot$ on exactly the inputs [`TableDomain::hash_to_point`] gives it
+    ///
+    /// # Panics
+    ///
+    /// Panics if `n` is zero or above [`LONGEST_MESSAGE_WORDS`], if `words.len()` is not a
+    /// multiple of `n`, or if a word is not a [`K`]-bit value.
+    pub(crate) fn hash_many_vartime(&self, words: &[u16], n: usize) -> Vec<CtOption<pallas::Base>> {
+        assert!(
+            (1..=LONGEST_MESSAGE_WORDS).contains(&n),
+            "the tables cover the length",
+        );
+        assert!(words.len().is_multiple_of(n), "whole messages only");
+
+        let tables = &*TABLES;
+        let start = Entry::from(&tables.starts[self.domain][n - 1]);
+        if words.len() / n < LOCKSTEP_LANES {
+            return self.hash_each_vartime(tables, start, words, n);
+        }
+        let mut lanes = vec![Some((start.x, start.y)); words.len() / n];
+        let mut scratch = Scratch::new(lanes.len());
+        for i in 0..n {
+            add_in_lockstep(
+                &mut lanes,
+                &mut scratch,
+                (&tables.generators[n - 1 - i], &tables.generators[n - i]),
+                |lane| usize::from(words[lane * n + i]),
+            );
+        }
+
+        lanes
+            .into_iter()
+            .map(|lane| match lane {
+                Some((x, _)) => CtOption::new(x, Choice::from(1)),
+                None => CtOption::new(pallas::Base::ZERO, Choice::from(0)),
+            })
+            .collect()
+    }
+
+    /// [`TableDomain::hash_many_vartime`] below [`LOCKSTEP_LANES`]: one Jacobian accumulator per
+    /// message, one shared inversion
+    ///
+    /// - Coincident x ($\bot$ or doubling, unreachable by chance) → [`TableDomain::hash_to_point`]
+    /// - No $\bot$ hashed silently: `jacobianStep_none_of_weightedStep_none` (sinsemilla-proofs)
+    fn hash_each_vartime(
+        &self,
+        tables: &Tables,
+        start: Entry,
+        words: &[u16],
+        n: usize,
+    ) -> Vec<CtOption<pallas::Base>> {
+        let accumulators: Vec<Option<Jacobian>> = words
+            .chunks_exact(n)
+            .map(|msg| {
+                // position i: rows (n − 1 − i, n − i) = (addends, doubled)
+                let rows = tables.generators[..=n].windows(2).rev();
+                msg.iter()
+                    .zip(rows)
+                    .try_fold(Jacobian::from(start), |acc, (&word, rows)| {
+                        let j = usize::from(word);
+                        acc.step(&rows[0][j], &rows[1][j])
+                    })
+            })
+            .collect();
+
+        // Montgomery's trick, one vartime inversion (z != 0: madd's z = 2·z·h with h != 0)
+        let mut zs: Vec<pallas::Base> = accumulators.iter().flatten().map(|acc| acc.z).collect();
+        let mut product = pallas::Base::ONE;
+        let products_before: Vec<pallas::Base> = zs
+            .iter()
+            .map(|z| {
+                let before = product;
+                product *= z;
+                before
+            })
+            .collect();
+        let mut inverse = product.invert_vartime().expect("product of nonzero zs");
+        for (z, before) in zs.iter_mut().zip(products_before).rev() {
+            (*z, inverse) = (inverse * before, inverse * *z);
+        }
+
+        let mut inverses = zs.into_iter();
+        accumulators
+            .into_iter()
+            .zip(words.chunks_exact(n))
+            .map(|(acc, msg)| match acc {
+                Some(acc) => {
+                    let z_inverse = inverses.next().expect("one inverse per accumulator");
+                    CtOption::new(acc.x * z_inverse.square(), Choice::from(1))
+                }
+                None => self.hash_to_point(msg).map(|p| {
+                    p.to_affine()
+                        .coordinates()
+                        .map(|c| *c.x())
+                        .unwrap_or(pallas::Base::ZERO)
+                }),
+            })
+            .collect()
+    }
+}
+
+/// `(X, Y, Z)` for the affine `(X/Z², Y/Z³)`, never the identity
+#[derive(Clone, Copy)]
+struct Jacobian {
+    x: pallas::Base,
+    y: pallas::Base,
+    z: pallas::Base,
+}
+
+impl From<Entry> for Jacobian {
+    fn from(Entry { x, y }: Entry) -> Self {
+        Jacobian {
+            x,
+            y,
+            z: pallas::Base::ONE,
+        }
+    }
+}
+
+impl Jacobian {
+    /// `self + addend` by madd-2007-bl (7M + 3S), `None` where x = x(addend) or x(doubled)
+    ///
+    /// - `doubled` = `[2] addend`: x test = rescaled $\pm$ conditions ("Reproducing $\bot$")
+    /// - Proofs: `affine_jacobianStep`, `jacobianStep_eq_none_iff` (sinsemilla-proofs)
+    #[inline]
+    fn step(&self, addend: &Entry, doubled: &Entry) -> Option<Self> {
+        let zz = self.z.square();
+        if self.x == doubled.x * zz {
+            return None;
+        }
+        let h = addend.x * zz - self.x;
+        if bool::from(h.is_zero()) {
+            return None;
+        }
+        let hh = h.square();
+        let i = hh.double().double();
+        let j = h * i;
+        let r = (addend.y * self.z * zz - self.y).double();
+        let v = self.x * i;
+        let x = r.square() - j - v.double();
+        let y = r * (v - x) - (self.y * j).double();
+        let z = (self.z + h).square() - zz - hh;
+        Some(Jacobian { x, y, z })
+    }
+}
+
+/// Fewest messages for lockstep (below: Jacobian accumulators faster)
+///
+/// - Merkle, one P-core, µs/hash (lockstep / Jacobian): 6 → 11.7 / 10.5, 8 → 10.1 / 10.6
+const LOCKSTEP_LANES: usize = 8;
+
+/// Affine accumulator, `None` once $\bot$
+type Lane = Option<(pallas::Base, pallas::Base)>;
+
+/// One word on every lane: `lane += addends[word(lane)]`
+///
+/// - `(addends, doubled)`: one weight row and the row above (`doubled[j]` = `[2] addends[j]`)
+/// - $\bot$ where `lane` = $\pm$ doubled or $-$addend (rescaled conditions, "Reproducing $\bot$")
+/// - `lane` = addend: tangent slope (an ordinary doubling, not $\bot$)
+/// - Montgomery's trick fused into both passes (live lanes only, no constant-time selects)
+/// - Proofs: `laneStep_eq_weightedStep`, `batchInverses_eq` (sinsemilla-proofs)
+fn add_in_lockstep(
+    lanes: &mut [Lane],
+    scratch: &mut Scratch,
+    (addends, doubled): (&[Entry], &[Entry]),
+    word: impl Fn(usize) -> usize,
+) {
+    let mut product = pallas::Base::ONE;
+    for (k, (lane, slot)) in lanes.iter_mut().zip(&mut scratch.slots).enumerate() {
+        let Some((x, y)) = *lane else { continue };
+        let j = word(k);
+        let addend = addends[j];
+        let denominator = if x == doubled[j].x {
+            *lane = None;
+            continue;
+        } else if x != addend.x {
+            addend.x - x
+        } else if y == addend.y {
+            y.double()
+        } else {
+            *lane = None;
+            continue;
+        };
+        *slot = Slot {
+            addend,
+            denominator,
+            product_before: product,
+        };
+        product *= denominator;
+    }
+
+    // denominators != 0 (x != tx, or 2y with y != 0: Pallas has no 2-torsion)
+    let mut inverse = product
+        .invert_vartime()
+        .expect("product of nonzero denominators");
+    for (lane, slot) in lanes.iter_mut().zip(&scratch.slots).rev() {
+        let Some((x, y)) = *lane else { continue };
+        let Slot {
+            addend: Entry { x: tx, y: ty },
+            denominator,
+            product_before,
+        } = *slot;
+        let inverse_here = inverse * product_before;
+        inverse *= denominator;
+        // tangent slope 3x² / 2y (Pallas a = 0)
+        let lambda = match x == tx {
+            true => x.square() * pallas::Base::from(3) * inverse_here,
+            false => (ty - y) * inverse_here,
+        };
+        let x3 = lambda.square() - x - tx;
+        *lane = Some((x3, lambda * (x - x3) - y));
+    }
+}
+
+/// One live lane's step: addend, slope denominator, product of the denominators before it
+#[derive(Clone, Copy)]
+struct Slot {
+    addend: Entry,
+    denominator: pallas::Base,
+    product_before: pallas::Base,
+}
+
+/// Per-lane working memory for [`add_in_lockstep`], allocated once per batch
+struct Scratch {
+    slots: Vec<Slot>,
+}
+
+impl Scratch {
+    fn new(lanes: usize) -> Self {
+        let zero = pallas::Base::ZERO;
+        Scratch {
+            slots: vec![
+                Slot {
+                    addend: Entry { x: zero, y: zero },
+                    denominator: zero,
+                    product_before: zero,
+                };
+                lanes
+            ],
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use alloc::{vec, vec::Vec};
 
-    use group::{Curve, CurveAffine as _, Group, GroupEncoding};
-    use pasta_curves::{arithmetic::CurveExt, pallas};
+    use group::{Curve, CurveAffine as _, Group, GroupEncoding, ff::Field};
+    use pasta_curves::{
+        arithmetic::{CurveAffine as _, CurveExt},
+        pallas,
+    };
 
     use super::{
-        Entry, KNOWN_DOMAINS, LONGEST_MESSAGE_WORDS, ROW_BYTES, TABLE_LIMIT, TABLES, TableDomain,
-        Tables, WEIGHTS, has_x_of,
+        Entry, Jacobian, KNOWN_DOMAINS, LOCKSTEP_LANES, LONGEST_MESSAGE_WORDS, Lane, ROW_BYTES,
+        Scratch, TABLE_LIMIT, TABLES, TableDomain, Tables, WEIGHTS, add_in_lockstep, has_x_of,
     };
     use crate::{HashDomain, K, Q_PERSONALIZATION, S_PERSONALIZATION};
 
@@ -691,5 +945,100 @@ mod tests {
         let built = Tables::build();
         assert_eq!(built.generators, TABLES.generators);
         assert_eq!(built.starts, TABLES.starts);
+    }
+
+    #[test]
+    fn hash_many_vartime_equals_hash_to_point_for_every_domain_and_width() {
+        for personalization in KNOWN_DOMAINS {
+            let tabled = TableDomain::new(personalization).expect("a known domain");
+            for n in [1, TEST_WORDS, LONGEST_MESSAGE_WORDS] {
+                for width in [0, 1, 2, LOCKSTEP_LANES - 1, LOCKSTEP_LANES, 33] {
+                    let mut words: Vec<u16> = (0..n * width)
+                        .map(|_| rand::random_range(0..1u16 << K))
+                        .collect();
+                    // word 0 and word 2^K - 1 in every position (random draws never give them)
+                    if width >= 2 {
+                        words[..n].fill(0);
+                        words[n..2 * n].fill((1 << K) - 1);
+                    }
+
+                    let expected: Vec<Option<pallas::Base>> = words
+                        .chunks_exact(n)
+                        .map(|msg| {
+                            Option::from(tabled.hash_to_point(msg))
+                                .map(|p: pallas::Point| *p.to_affine().coordinates().unwrap().x())
+                        })
+                        .collect();
+                    let actual: Vec<Option<pallas::Base>> = tabled
+                        .hash_many_vartime(&words, n)
+                        .into_iter()
+                        .map(Option::from)
+                        .collect();
+                    assert_eq!(
+                        actual, expected,
+                        "{personalization}, {n} words, {width} messages"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Lane = T, −T, ±[2]T: unreachable from random messages, so reached with crafted lanes
+    ///
+    /// - Lockstep: exact ⊥, lane = T doubles
+    /// - Jacobian: every coincident x handed back (caller → `hash_to_point`)
+    #[test]
+    fn crafted_lanes_give_bottom_on_the_rescaled_conditions_in_both_evaluators() {
+        let s = pallas::Point::hash_to_curve(S_PERSONALIZATION);
+        let (t, other) = (s(&7u32.to_le_bytes()), s(&8u32.to_le_bytes()));
+        let entry = |p: pallas::Point| Entry::from(&p.to_affine());
+        let (addend, doubled) = (entry(t), entry(t.double()));
+
+        // (case, lane before, lockstep after, Jacobian after; None = ⊥ / handed back)
+        let cases = [
+            ("generic", Some(other), Some(other + t), Some(other + t)),
+            ("lane = T", Some(t), Some(t.double()), None),
+            ("lane = -T", Some(-t), None, None),
+            ("lane = [2]T", Some(t.double()), None, None),
+            ("lane = -[2]T", Some(-t.double()), None, None),
+            ("already bottom", None, None, None),
+            (
+                "generic after a dead lane",
+                Some(-other),
+                Some(t - other),
+                Some(t - other),
+            ),
+        ];
+        let mut lanes: Vec<Lane> = cases
+            .iter()
+            .map(|(_, before, _, _)| before.map(|p| (entry(p).x, entry(p).y)))
+            .collect();
+        let mut scratch = Scratch::new(lanes.len());
+
+        add_in_lockstep(&mut lanes, &mut scratch, (&[addend], &[doubled]), |_| 0);
+
+        for ((case, before, lockstep, jacobian), lane) in cases.iter().zip(&lanes) {
+            let affine = |p: pallas::Point| (entry(p).x, entry(p).y);
+            assert_eq!(*lane, lockstep.map(affine), "lockstep, {case}");
+            // Z = 5 (Z = 1 would not exercise X = x·Z²)
+            let z = pallas::Base::from(5);
+            let stepped = before.and_then(|p| {
+                let Entry { x, y } = entry(p);
+                let acc = Jacobian {
+                    x: x * z.square(),
+                    y: y * z.square() * z,
+                    z,
+                };
+                acc.step(&addend, &doubled)
+            });
+            let stepped = stepped.map(|acc| {
+                let z_inverse = acc.z.invert().unwrap();
+                (
+                    acc.x * z_inverse.square(),
+                    acc.y * z_inverse.square() * z_inverse,
+                )
+            });
+            assert_eq!(stepped, jacobian.map(affine), "Jacobian, {case}");
+        }
     }
 }
