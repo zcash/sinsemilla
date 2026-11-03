@@ -306,6 +306,43 @@ impl Tables {
 
 static TABLES: LazyLock<Tables> = LazyLock::new(Tables::build);
 
+/// Words each of [`KNOWN_DOMAINS`] hashes (Merkle parent, note commitment, `CommitIvk`)
+const KNOWN_DOMAIN_WORDS: [usize; 3] = [52, 109, 51];
+
+/// Per known domain, at its [`KNOWN_DOMAIN_WORDS`] length `n`: $P_1$ for first word `j` =
+/// $\[2^n\] \mathcal{Q} + \[2^{n-1}\] S_j$, `None` where position 0 is $\bot$
+///
+/// - Variable-time paths only, built on first use there (one 64 KiB row per domain, past the budget)
+static FIRST_STEPS: [LazyLock<Vec<Option<Entry>>>; 3] = [
+    LazyLock::new(|| first_steps(0)),
+    LazyLock::new(|| first_steps(1)),
+    LazyLock::new(|| first_steps(2)),
+];
+
+/// [`FIRST_STEPS`] row of domain `d` (only forced once `n` is covered: [`TableDomain::first_steps`])
+///
+/// - `None` = position-0 $\bot$: `weightedHashToPoint_cons` (sinsemilla-proofs)
+fn first_steps(d: usize) -> Vec<Option<Entry>> {
+    let n = KNOWN_DOMAIN_WORDS[d];
+    let start = TABLES.starts[d][n - 1];
+    let sums: Vec<pallas::Point> = TABLES.generators[n - 1]
+        .iter()
+        .map(|addend| start.to_curve() + addend.affine())
+        .collect();
+    let mut affine = vec![pallas::Affine::default(); S_LEN];
+    pallas::Point::batch_normalize(&sums, &mut affine);
+    // ⊥ at position 0: P_0 = ±[2] T (x test one weight up) or P_0 = −T (sum = identity)
+    let start_x = Entry::from(&start).x;
+    affine
+        .iter()
+        .zip(&TABLES.generators[n])
+        .map(|(sum, doubled)| {
+            let bottom = start_x == doubled.x || bool::from(sum.is_identity());
+            (!bottom).then(|| Entry::from(sum))
+        })
+        .collect()
+}
+
 /// Generator-table entry: affine $(x, y)$ of a weighted generator (on curve, never the identity)
 ///
 /// - Raw coordinates (`coordinates()` on a stored `pallas::Affine` = constant-time identity test)
@@ -445,12 +482,19 @@ impl TableDomain {
 
         let tables = &*TABLES;
         let start = Entry::from(&tables.starts[self.domain][n - 1]);
+        let first_steps = self.first_steps(n);
         if words.len() / n < LOCKSTEP_LANES {
-            return self.hash_each_vartime(tables, start, words, n);
+            return self.hash_each_vartime(tables, start, first_steps, words, n);
         }
-        let mut lanes = vec![Some((start.x, start.y)); words.len() / n];
+        let mut lanes: Vec<Lane> = match first_steps {
+            Some(first) => words
+                .chunks_exact(n)
+                .map(|msg| first[usize::from(msg[0])].map(|Entry { x, y }| (x, y)))
+                .collect(),
+            None => vec![Some((start.x, start.y)); words.len() / n],
+        };
         let mut scratch = Scratch::new(lanes.len());
-        for i in 0..n {
+        for i in usize::from(first_steps.is_some())..n {
             add_in_lockstep(
                 &mut lanes,
                 &mut scratch,
@@ -468,6 +512,11 @@ impl TableDomain {
             .collect()
     }
 
+    /// [`FIRST_STEPS`] row for this domain, when `n` = its [`KNOWN_DOMAIN_WORDS`] length
+    fn first_steps(&self, n: usize) -> Option<&'static [Option<Entry>]> {
+        (n == KNOWN_DOMAIN_WORDS[self.domain]).then(|| &FIRST_STEPS[self.domain][..])
+    }
+
     /// [`TableDomain::hash_many_vartime`] below [`LOCKSTEP_LANES`]: one Jacobian accumulator per
     /// message, one shared inversion
     ///
@@ -477,20 +526,26 @@ impl TableDomain {
         &self,
         tables: &Tables,
         start: Entry,
+        first_steps: Option<&[Option<Entry>]>,
         words: &[u16],
         n: usize,
     ) -> Vec<CtOption<pallas::Base>> {
         let accumulators: Vec<Option<Jacobian>> = words
             .chunks_exact(n)
             .map(|msg| {
+                let (acc, from) = match first_steps {
+                    Some(first) => (first[usize::from(msg[0])]?, 1),
+                    None => (start, 0),
+                };
                 // position i: rows (n − 1 − i, n − i) = (addends, doubled)
                 let rows = tables.generators[..=n].windows(2).rev();
-                msg.iter()
-                    .zip(rows)
-                    .try_fold(Jacobian::from(start), |acc, (&word, rows)| {
+                msg.iter().zip(rows).skip(from).try_fold(
+                    Jacobian::from(acc),
+                    |acc, (&word, rows)| {
                         let j = usize::from(word);
                         acc.step(&rows[0][j], &rows[1][j])
-                    })
+                    },
+                )
             })
             .collect();
 
@@ -951,8 +1006,11 @@ mod tests {
     fn hash_many_vartime_equals_hash_to_point_for_every_domain_and_width() {
         for personalization in KNOWN_DOMAINS {
             let tabled = TableDomain::new(personalization).expect("a known domain");
-            for n in [1, TEST_WORDS, LONGEST_MESSAGE_WORDS] {
-                for width in [0, 1, 2, LOCKSTEP_LANES - 1, LOCKSTEP_LANES, 33] {
+            // own length (`FIRST_STEPS` row) where covered, plus both ends of the range
+            let lengths = [1, 51, 52, 109, LONGEST_MESSAGE_WORDS];
+            for n in lengths.into_iter().filter(|&n| n <= LONGEST_MESSAGE_WORDS) {
+                // 1024: every first word once (each `FIRST_STEPS` entry)
+                for width in [0, 1, 2, LOCKSTEP_LANES - 1, LOCKSTEP_LANES, 33, 1 << K] {
                     let mut words: Vec<u16> = (0..n * width)
                         .map(|_| rand::random_range(0..1u16 << K))
                         .collect();
@@ -960,6 +1018,11 @@ mod tests {
                     if width >= 2 {
                         words[..n].fill(0);
                         words[n..2 * n].fill((1 << K) - 1);
+                    }
+                    if width == 1 << K {
+                        for (j, msg) in words.chunks_exact_mut(n).enumerate() {
+                            msg[0] = j as u16;
+                        }
                     }
 
                     let expected: Vec<Option<pallas::Base>> = words
