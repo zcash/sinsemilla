@@ -168,8 +168,37 @@ fn table(c: &mut Criterion) {
     group.finish();
 }
 
+/// Merkle parent hashes one at a time vs [`HashDomain::hash_many_vartime`], per tree-level width
+fn hash_many(c: &mut Criterion) {
+    let domain = HashDomain::new("z.cash:Orchard-MerkleCRH");
+    let msgs: Vec<_> = (0..BATCH).map(|_| random_bits(MERKLE_HASH_BITS)).collect();
+    let words: Vec<[u16; MERKLE_HASH_BITS / K]> = msgs
+        .iter()
+        .map(|msg| core::array::from_fn(|i| (0..K).map(|b| u16::from(msg[K * i + b]) << b).sum()))
+        .collect();
+
+    let mut group = c.benchmark_group("hash_many");
+    for width in [1, 16, 63, 64, 256, BATCH] {
+        let msgs = &msgs[..width];
+        group.throughput(Throughput::Elements(width as u64));
+        group.bench_with_input(BenchmarkId::new("hash", width), msgs, |b, msgs| {
+            b.iter(|| {
+                msgs.iter()
+                    .map(|msg| domain.hash(black_box(msg).iter().copied()))
+                    .collect::<Vec<_>>()
+            })
+        });
+        group.bench_with_input(
+            BenchmarkId::new("vartime", width),
+            &words[..width],
+            |b, words| b.iter(|| domain.hash_many_vartime(black_box(words))),
+        );
+    }
+    group.finish();
+}
+
 #[cfg(feature = "std")]
-criterion_group!(benches, hash, hash_batch, domain, commit, table);
+criterion_group!(benches, hash, hash_batch, hash_many, domain, commit, table);
 #[cfg(not(feature = "std"))]
-criterion_group!(benches, hash, hash_batch, domain, commit);
+criterion_group!(benches, hash, hash_batch, hash_many, domain, commit);
 criterion_main!(benches);
