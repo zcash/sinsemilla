@@ -6,6 +6,9 @@ and this project adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Changed
+- Stream message words directly into the accumulator for domains without
+  position-weighted tables, instead of first filling a packed-word buffer.
 
 ## [0.2.0] - 2026-09-25
 ### Added

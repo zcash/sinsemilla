@@ -91,6 +91,49 @@ fn s_generator(j: usize) -> pallas::Affine {
     pallas::Affine::from_xy_unchecked(x, y)
 }
 
+/// Converts a bit iterator into zero-padded [`K`]-bit words.
+struct MessageWords<I: Iterator<Item = bool>> {
+    inner: I,
+    bits_read: usize,
+    finished: bool,
+}
+
+impl<I: Iterator<Item = bool>> MessageWords<I> {
+    fn new(inner: I) -> Self {
+        Self {
+            inner,
+            bits_read: 0,
+            finished: false,
+        }
+    }
+}
+
+impl<I: Iterator<Item = bool>> Iterator for MessageWords<I> {
+    type Item = u16;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.finished {
+            return None;
+        }
+
+        let mut word = 0;
+        for bit_index in 0..K {
+            match self.inner.next() {
+                Some(bit) => {
+                    assert!(self.bits_read < K * C, "message is longer than K * C bits");
+                    self.bits_read += 1;
+                    word |= u16::from(bit) << bit_index;
+                }
+                None => {
+                    self.finished = true;
+                    return (bit_index > 0).then_some(word);
+                }
+            }
+        }
+        Some(word)
+    }
+}
+
 /// A domain in which $\mathsf{SinsemillaHashToPoint}$ and $\mathsf{SinsemillaHash}$ can
 /// be used.
 #[derive(Debug, Clone)]
@@ -140,42 +183,39 @@ impl HashDomain {
 
     /// Splits `msg` into [`K`]-bit words and hashes it, with the tables where they apply.
     ///
-    /// The message is packed into words before the choice is made, because the choice
-    /// depends on the length and the iterator can only be read once. [`C`] words is the
-    /// longest message the specification allows, so the buffer is a fixed 506 bytes of
-    /// stack and neither path allocates.
+    /// Without a tabled domain, words feed the accumulator directly. Tabled domains
+    /// first pack the words into a fixed buffer because dispatch depends on message
+    /// length and the iterator can only be read once. Neither path allocates.
     ///
     /// # Panics
     ///
     /// Panics if the message is longer than [`K`] * [`C`] bits.
     fn hash_to_point_impl(&self, msg: impl Iterator<Item = bool>) -> CtOption<pallas::Point> {
-        let mut words = [0u16; C];
-        let mut len = 0usize;
-
-        for bit in msg {
-            assert!(len < K * C, "message is longer than K * C bits");
-            words[len / K] |= u16::from(bit) << (len % K);
-            len += 1;
-        }
-        let words = &words[..len.div_ceil(K)];
+        let words = MessageWords::new(msg);
 
         #[cfg(feature = "runtime-precomputation")]
         if let Some(tabled) = self.tabled {
-            if (1..=table::LONGEST_MESSAGE_WORDS).contains(&words.len()) {
-                return tabled.hash_to_point(words);
+            let mut packed = [0u16; C];
+            let mut len = 0;
+            for word in words {
+                packed[len] = word;
+                len += 1;
             }
+            let packed = &packed[..len];
+            if (1..=table::LONGEST_MESSAGE_WORDS).contains(&len) {
+                return tabled.hash_to_point(packed);
+            }
+            return self.accumulate(packed.iter().copied()).into();
         }
 
         self.accumulate(words).into()
     }
 
     /// The specification's recurrence, $A_i = \[2\] A_{i-1} \;⸭\; S_{m_i}$, over `words`.
-    fn accumulate(&self, words: &[u16]) -> IncompletePoint {
-        words
-            .iter()
-            .fold(IncompletePoint::from(self.Q), |acc, word| {
-                acc.double_and_add(s_generator(usize::from(*word)))
-            })
+    fn accumulate(&self, words: impl Iterator<Item = u16>) -> IncompletePoint {
+        words.fold(IncompletePoint::from(self.Q), |acc, word| {
+            acc.double_and_add(s_generator(usize::from(word)))
+        })
     }
 
     /// $\mathsf{SinsemillaHash}$ from [§ 5.4.1.9][concretesinsemillahash].
@@ -287,6 +327,9 @@ impl CommitDomain {
 }
 
 #[cfg(test)]
+mod stream_tests;
+
+#[cfg(test)]
 mod tests {
     use alloc::vec::Vec;
 
@@ -315,7 +358,7 @@ mod tests {
     }
 
     /// A deterministic bit stream (xorshift64), so the test needs no RNG dependency.
-    fn bits(seed: u64, n: usize) -> Vec<bool> {
+    pub(super) fn bits(seed: u64, n: usize) -> Vec<bool> {
         let mut x = seed | 1;
         (0..n)
             .map(|_| {
