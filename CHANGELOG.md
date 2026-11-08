@@ -7,6 +7,10 @@ and this project adheres to Rust's notion of
 
 ## [Unreleased]
 ### Added
+- `sinsemilla::precompute` initializes runtime tables before the first hash.
+- `sinsemilla::is_precomputed` reports initialization for callers using
+  `test-dependencies`.
+
 - The `runtime-precomputation` feature, which is not enabled by default. It makes
   `HashDomain::hash_to_point`, `HashDomain::hash`, `CommitDomain::commit` and
   `CommitDomain::short_commit` faster for the personalizations listed below, by

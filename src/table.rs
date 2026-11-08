@@ -310,9 +310,32 @@ impl Tables {
     }
 }
 
+static TABLES: OnceBox<Tables> = OnceBox::new();
+
 fn tables() -> &'static Tables {
-    static TABLES: OnceBox<Tables> = OnceBox::new();
     TABLES.get_or_init(|| Box::new(Tables::build()))
+}
+
+/// Builds the shared position-weighted tables without hashing a message.
+///
+/// This can be called during startup to move the one-time allocation and construction
+/// cost out of the first hash. Calls share the same lazy initializer as hashing, and
+/// return only after construction completes. Later calls do not rebuild the tables.
+/// If the configured budget covers no messages, this does nothing.
+#[cfg(feature = "runtime-precomputation")]
+pub fn precompute() {
+    if LONGEST_MESSAGE_WORDS > 0 {
+        tables();
+    }
+}
+
+/// Returns whether the shared tables have completed initialization, for testing.
+#[cfg(all(
+    feature = "runtime-precomputation",
+    any(test, feature = "test-dependencies")
+))]
+pub fn is_precomputed() -> bool {
+    TABLES.get().is_some()
 }
 
 /// Per known domain, at its [`KNOWN_DOMAIN_WORDS`] length `n`: $P_1$ for first word `j` =
@@ -784,7 +807,7 @@ fn evaluate(start: pallas::Point, words: &[u16]) -> CtOption<pallas::Point> {
     let n = words.len();
     // The position-weighted prefix P_i, which is [2^(n-i)] Acc_i.
     let mut acc = start;
-    let mut exceptional = Choice::from(0u8);
+    let mut exceptional = acc.is_identity();
 
     for (i, &word) in words.iter().enumerate() {
         let word = usize::from(word);
@@ -807,6 +830,10 @@ fn evaluate(start: pallas::Point, words: &[u16]) -> CtOption<pallas::Point> {
 
     CtOption::new(acc, !exceptional)
 }
+
+#[cfg(test)]
+#[path = "table_exact_tests.rs"]
+mod exact_tests;
 
 #[cfg(test)]
 mod tests {
