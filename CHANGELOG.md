@@ -7,12 +7,12 @@ and this project adheres to Rust's notion of
 
 ## [Unreleased]
 ### Added
-- `sinsemilla::precompute` initializes runtime tables before the first hash.
+- `sinsemilla::precompute` initializes runtime tables and covered batch first-step
+  rows before the first hash.
 - The `merkle-table` feature guarantees table coverage of the 52-word Orchard
   Merkle hash, even with a smaller target default or `SINSEMILLA_TABLE_LIMIT`.
 - `HashDomain::precomputed_message_words` reports initialized table coverage for
   callers using `test-dependencies`.
-
 - The `runtime-precomputation` feature, which is not enabled by default. It makes
   `HashDomain::hash_to_point`, `HashDomain::hash`, `CommitDomain::commit` and
   `CommitDomain::short_commit` faster for the personalizations listed below, by

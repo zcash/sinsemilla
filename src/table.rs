@@ -327,16 +327,21 @@ fn tables() -> &'static Tables {
     TABLES.get_or_init(|| Box::new(Tables::build()))
 }
 
-/// Builds the shared position-weighted tables without hashing a message.
+/// Builds the shared position-weighted tables and covered batch first-step rows.
 ///
 /// This can be called during startup to move the one-time allocation and construction
-/// cost out of the first hash. Calls share the same lazy initializer as hashing, and
-/// return only after construction completes. Later calls do not rebuild the tables.
+/// cost out of the first scalar or batch hash. Calls share the same lazy initializers
+/// as hashing and return only after construction completes. Later calls do not rebuild.
 /// If the configured budget covers no messages, this does nothing.
 #[cfg(feature = "runtime-precomputation")]
 pub fn precompute() {
     if LONGEST_MESSAGE_WORDS > 0 {
-        tables();
+        let tables = tables();
+        for (domain, n) in KNOWN_DOMAIN_WORDS.into_iter().enumerate() {
+            if n <= LONGEST_MESSAGE_WORDS {
+                let _ = TableDomain { domain }.first_steps(tables, n);
+            }
+        }
     }
 }
 
@@ -356,13 +361,20 @@ pub(crate) fn precomputed_message_words() -> usize {
 /// Per known domain, at its [`KNOWN_DOMAIN_WORDS`] length `n`: $P_1$ for first word `j` =
 /// $\[2^n\] \mathcal{Q} + \[2^{n-1}\] S_j$.
 ///
-/// - Variable-time paths only, built on first use, outside the generator table budget.
-/// - Orchard MerkleCRH caches only its 32 layer values (2 KiB); other domains cache all
-///   [`S_LEN`] first words (64 KiB each). Uncached words take the ordinary first step.
-/// - If any cached word would give $\bot$, store `None` and use the ordinary first step for all words.
+/// - Built on first batch use or by [`precompute`], outside the generator-row budget.
+///   Row contents occupy `LEN * core::mem::size_of::<Entry>()` bytes per covered domain:
+///   - `LEN = 32` for Orchard MerkleCRH (corresponding to possible 32 layer values).
+///     Uncached words take the ordinary first step.
+///   - `LEN` is [`S_LEN`] for all other domains.
+///   - If any cached word would give $\bot$, no cache is stored. This is not the case for
+///     the three current known domains.
 /// - Concurrent first uses may each build the row; one is kept (as for [`tables`])
 static FIRST_STEPS: [OnceBox<Option<Vec<Entry>>>; 3] =
     [OnceBox::new(), OnceBox::new(), OnceBox::new()];
+
+#[cfg(test)]
+static FIRST_STEPS_INITIALIZED: [core::sync::atomic::AtomicBool; 3] =
+    [const { core::sync::atomic::AtomicBool::new(false) }; 3];
 
 /// Builds a row only if every first word is nonexceptional.
 fn build_first_steps(start: Entry, addends: &[Entry], doubled: &[Entry]) -> Option<Vec<Entry>> {
@@ -573,11 +585,15 @@ impl TableDomain {
                 } else {
                     S_LEN
                 };
-                Box::new(build_first_steps(
+                let row = build_first_steps(
                     Entry::from(&tables.starts[self.domain][n - 1]),
                     &tables.generators[n - 1][..entries],
                     &tables.generators[n][..entries],
-                ))
+                );
+                #[cfg(test)]
+                FIRST_STEPS_INITIALIZED[self.domain]
+                    .store(true, core::sync::atomic::Ordering::Release);
+                Box::new(row)
             })
             .as_deref()
     }
@@ -1227,8 +1243,8 @@ mod tests {
     /// word after it. The specification-shaped evaluator, from the same $\mathcal{Q}$,
     /// agrees on every case.
     ///
-    /// No stored domain can reach these inputs, so this is the only test of the
-    /// `has_x_of` and identity flags in [`evaluate`].
+    /// Choosing the domain point makes these otherwise unreachable exceptional inputs
+    /// exercise the `has_x_of` and identity flags in [`evaluate`].
     #[test]
     fn reports_bottom_on_each_exceptional_case() {
         let n = TEST_WORDS;
