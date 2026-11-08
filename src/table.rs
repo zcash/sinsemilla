@@ -178,9 +178,20 @@ const DEFAULT_TABLE_LIMIT: usize = 4 << 20;
 const DEFAULT_TABLE_LIMIT: usize = 1 << 20;
 
 /// The table budget for this build, in bytes.
-pub const TABLE_LIMIT: usize = match option_env!("SINSEMILLA_TABLE_LIMIT") {
-    Some(limit) if !limit.is_empty() => parse_usize(limit),
-    _ => DEFAULT_TABLE_LIMIT,
+///
+/// `merkle-table` enforces at least 53 rows, covering the 52-word Orchard Merkle
+/// hash even when the environment or target default requests a smaller table.
+pub const TABLE_LIMIT: usize = {
+    let configured = match option_env!("SINSEMILLA_TABLE_LIMIT") {
+        Some(limit) if !limit.is_empty() => parse_usize(limit),
+        _ => DEFAULT_TABLE_LIMIT,
+    };
+    let merkle_minimum = 53 * ROW_BYTES;
+    if cfg!(feature = "merkle-table") && configured < merkle_minimum {
+        merkle_minimum
+    } else {
+        configured
+    }
 };
 
 /// Parses a decimal `usize` at compile time, for [`TABLE_LIMIT`].
@@ -328,13 +339,17 @@ pub fn precompute() {
     }
 }
 
-/// Returns whether the shared tables have completed initialization, for testing.
+/// Returns the covered message length after table construction, or zero before it.
 #[cfg(all(
     feature = "runtime-precomputation",
     any(test, feature = "test-dependencies")
 ))]
-pub fn is_precomputed() -> bool {
-    TABLES_INITIALIZED.load(core::sync::atomic::Ordering::Acquire)
+pub(crate) fn precomputed_message_words() -> usize {
+    if TABLES_INITIALIZED.load(core::sync::atomic::Ordering::Acquire) {
+        LONGEST_MESSAGE_WORDS
+    } else {
+        0
+    }
 }
 
 /// Words each of [`KNOWN_DOMAINS`] hashes (Merkle parent, note commitment, `CommitIvk`)
@@ -467,7 +482,10 @@ impl TableDomain {
             "the message is longer than the tables cover",
         );
 
-        Self::evaluate(words, TABLES.starts[self.domain][words.len() - 1].to_curve())
+        Self::evaluate(
+            words,
+            TABLES.starts[self.domain][words.len() - 1].to_curve(),
+        )
     }
 
     /// Evaluates with an explicit weighted start so tests can force exceptional cases.
