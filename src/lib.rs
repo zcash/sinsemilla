@@ -30,12 +30,6 @@ pub use sinsemilla_s::SINSEMILLA_S;
 #[cfg(feature = "runtime-precomputation")]
 #[cfg_attr(docsrs, doc(cfg(feature = "runtime-precomputation")))]
 pub use table::precompute;
-#[cfg(all(feature = "runtime-precomputation", feature = "test-dependencies"))]
-#[cfg_attr(
-    docsrs,
-    doc(cfg(all(feature = "runtime-precomputation", feature = "test-dependencies")))
-)]
-pub use table::is_precomputed;
 
 /// Number of bits of each message piece in $\mathsf{SinsemillaHashToPoint}$
 pub const K: usize = 10;
@@ -251,6 +245,23 @@ impl HashDomain {
                 CtOption::new(x.unwrap_or_else(pallas::Base::zero), point.is_some())
             })
             .collect()
+    }
+
+    /// Returns this domain's table coverage in words, or zero before initialization.
+    ///
+    /// Domains without runtime tables, including those built with [`Self::from_Q`],
+    /// always report zero. This inspection API is only available for testing.
+    #[cfg(all(
+        feature = "runtime-precomputation",
+        any(test, feature = "test-dependencies")
+    ))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(all(feature = "runtime-precomputation", feature = "test-dependencies")))
+    )]
+    pub fn precomputed_message_words(&self) -> usize {
+        self.tabled
+            .map_or(0, |_| table::precomputed_message_words())
     }
 
     /// Constructs a new `HashDomain` from a given `Q`.

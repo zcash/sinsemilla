@@ -18,8 +18,10 @@ and this project adheres to Rust's notion of
 
 ### Added
 - `sinsemilla::precompute` initializes runtime tables before the first hash.
-- `sinsemilla::is_precomputed` reports initialization for callers using
-  `test-dependencies`.
+- The `merkle-table` feature guarantees table coverage of the 52-word Orchard
+  Merkle hash, even with a smaller target default or `SINSEMILLA_TABLE_LIMIT`.
+- `HashDomain::precomputed_message_words` reports initialized table coverage for
+  callers using `test-dependencies`.
 
 ## [0.2.0] - 2026-09-25
 ### Added

@@ -9,7 +9,9 @@ use crate::{HashDomain, K, s_generator};
 
 fn check(q: pallas::Point, words: &[u16]) {
     let initial = (0..words.len()).fold(q, |point, _| point.double());
-    let bits = words.iter().flat_map(|word| (0..K).map(move |bit| word & (1 << bit) != 0));
+    let bits = words
+        .iter()
+        .flat_map(|word| (0..K).map(move |bit| word & (1 << bit) != 0));
     let expected = HashDomain::from_Q(q).hash_to_point(bits);
     let actual = TableDomain::evaluate(words, initial);
     assert_eq!(
@@ -50,7 +52,20 @@ fn weighted_checks_match_spec_for_random_domains() {
 #[test]
 fn precompute_initializes_shared_tables() {
     super::precompute();
-    assert!(super::is_precomputed());
+    assert_eq!(super::precomputed_message_words(), LONGEST_MESSAGE_WORDS);
     super::precompute();
-    assert!(super::is_precomputed());
+    assert_eq!(super::precomputed_message_words(), LONGEST_MESSAGE_WORDS);
+}
+
+#[cfg(feature = "merkle-table")]
+#[test]
+fn merkle_table_covers_the_full_orchard_message() {
+    super::precompute();
+    assert!(super::TABLES.generators.len() >= 53);
+    let domain = HashDomain::new("z.cash:Orchard-MerkleCRH");
+    assert!(domain.precomputed_message_words() >= 52);
+    assert_eq!(
+        HashDomain::from_Q(domain.Q()).precomputed_message_words(),
+        0
+    );
 }
