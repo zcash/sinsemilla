@@ -304,7 +304,38 @@ impl Tables {
     }
 }
 
-static TABLES: LazyLock<Tables> = LazyLock::new(Tables::build);
+static TABLES: LazyLock<Tables> = LazyLock::new(|| {
+    let tables = Tables::build();
+    #[cfg(any(test, feature = "test-dependencies"))]
+    TABLES_INITIALIZED.store(true, core::sync::atomic::Ordering::Release);
+    tables
+});
+
+#[cfg(any(test, feature = "test-dependencies"))]
+static TABLES_INITIALIZED: core::sync::atomic::AtomicBool =
+    core::sync::atomic::AtomicBool::new(false);
+
+/// Builds the shared position-weighted tables without hashing a message.
+///
+/// This can be called during startup to move the one-time allocation and construction
+/// cost out of the first hash. Calls share the same lazy initializer as hashing, and
+/// return only after construction completes. Later calls do not rebuild the tables.
+/// If the configured budget covers no messages, this does nothing.
+#[cfg(feature = "runtime-precomputation")]
+pub fn precompute() {
+    if LONGEST_MESSAGE_WORDS > 0 {
+        LazyLock::force(&TABLES);
+    }
+}
+
+/// Returns whether the shared tables have completed initialization, for testing.
+#[cfg(all(
+    feature = "runtime-precomputation",
+    any(test, feature = "test-dependencies")
+))]
+pub fn is_precomputed() -> bool {
+    TABLES_INITIALIZED.load(core::sync::atomic::Ordering::Acquire)
+}
 
 /// Words each of [`KNOWN_DOMAINS`] hashes (Merkle parent, note commitment, `CommitIvk`)
 const KNOWN_DOMAIN_WORDS: [usize; 3] = [52, 109, 51];
@@ -436,10 +467,15 @@ impl TableDomain {
             "the message is longer than the tables cover",
         );
 
+        Self::evaluate(words, TABLES.starts[self.domain][words.len() - 1].to_curve())
+    }
+
+    /// Evaluates with an explicit weighted start so tests can force exceptional cases.
+    #[inline]
+    fn evaluate(words: &[u16], mut acc: pallas::Point) -> CtOption<pallas::Point> {
         let n = words.len();
         // The position-weighted prefix P_i, which is [2^(n-i)] Acc_i.
-        let mut acc = TABLES.starts[self.domain][n - 1].to_curve();
-        let mut exceptional = Choice::from(0u8);
+        let mut exceptional = acc.is_identity();
 
         for (i, &word) in words.iter().enumerate() {
             let word = usize::from(word);
@@ -726,6 +762,10 @@ impl Scratch {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "table_exact_tests.rs"]
+mod exact_tests;
 
 #[cfg(test)]
 mod tests {
