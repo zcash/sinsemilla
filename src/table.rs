@@ -326,16 +326,21 @@ static TABLES: LazyLock<Tables> = LazyLock::new(|| {
 static TABLES_INITIALIZED: core::sync::atomic::AtomicBool =
     core::sync::atomic::AtomicBool::new(false);
 
-/// Builds the shared position-weighted tables without hashing a message.
+/// Builds the shared position-weighted tables and covered batch first-step rows.
 ///
 /// This can be called during startup to move the one-time allocation and construction
-/// cost out of the first hash. Calls share the same lazy initializer as hashing, and
-/// return only after construction completes. Later calls do not rebuild the tables.
+/// cost out of the first scalar or batch hash. Calls share the same lazy initializers
+/// as hashing and return only after construction completes. Later calls do not rebuild.
 /// If the configured budget covers no messages, this does nothing.
 #[cfg(feature = "runtime-precomputation")]
 pub fn precompute() {
     if LONGEST_MESSAGE_WORDS > 0 {
         LazyLock::force(&TABLES);
+        for (row, &words) in FIRST_STEPS.iter().zip(&KNOWN_DOMAIN_WORDS) {
+            if words <= LONGEST_MESSAGE_WORDS {
+                LazyLock::force(row);
+            }
+        }
     }
 }
 
@@ -358,19 +363,31 @@ const KNOWN_DOMAIN_WORDS: [usize; 3] = [52, 109, 51];
 /// Per known domain, at its [`KNOWN_DOMAIN_WORDS`] length `n`: $P_1$ for first word `j` =
 /// $\[2^n\] \mathcal{Q} + \[2^{n-1}\] S_j$, `None` where position 0 is $\bot$
 ///
-/// - Variable-time paths only, built on first use there (one 64 KiB row per domain, past the budget)
+/// - Built on first batch use or by [`precompute`] (one 64 KiB row per covered domain,
+///   outside the generator-row budget).
 static FIRST_STEPS: [LazyLock<Vec<Option<Entry>>>; 3] = [
     LazyLock::new(|| first_steps(0)),
     LazyLock::new(|| first_steps(1)),
     LazyLock::new(|| first_steps(2)),
 ];
 
+#[cfg(test)]
+static FIRST_STEPS_INITIALIZED: [core::sync::atomic::AtomicBool; 3] =
+    [const { core::sync::atomic::AtomicBool::new(false) }; 3];
+
 /// [`FIRST_STEPS`] row of domain `d` (only forced once `n` is covered: [`TableDomain::first_steps`])
 ///
 /// - `None` = position-0 $\bot$: `weightedHashToPoint_cons` (sinsemilla-proofs)
 fn first_steps(d: usize) -> Vec<Option<Entry>> {
     let n = KNOWN_DOMAIN_WORDS[d];
-    let start = TABLES.starts[d][n - 1];
+    let row = first_steps_from(TABLES.starts[d][n - 1], n);
+    #[cfg(test)]
+    FIRST_STEPS_INITIALIZED[d].store(true, core::sync::atomic::Ordering::Release);
+    row
+}
+
+/// Builds a first-step row from an explicit weighted start, including its exceptional entries.
+fn first_steps_from(start: pallas::Affine, n: usize) -> Vec<Option<Entry>> {
     let sums: Vec<pallas::Point> = TABLES.generators[n - 1]
         .iter()
         .map(|addend| start.to_curve() + addend.affine())

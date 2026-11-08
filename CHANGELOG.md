@@ -15,9 +15,8 @@ and this project adheres to Rust's notion of
   shared across all of them, and below that on Jacobian accumulators, with one
   inversion shared at the end. This is variable time, so it is only for public
   inputs such as Merkle tree nodes.
-
-### Added
-- `sinsemilla::precompute` initializes runtime tables before the first hash.
+- `sinsemilla::precompute` initializes runtime tables and covered batch first-step
+  rows before the first hash.
 - The `merkle-table` feature guarantees table coverage of the 52-word Orchard
   Merkle hash, even with a smaller target default or `SINSEMILLA_TABLE_LIMIT`.
 - `HashDomain::precomputed_message_words` reports initialized table coverage for
