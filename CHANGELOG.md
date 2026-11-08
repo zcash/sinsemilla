@@ -16,6 +16,11 @@ and this project adheres to Rust's notion of
   inversion shared at the end. This is variable time, so it is only for public
   inputs such as Merkle tree nodes.
 
+### Added
+- `sinsemilla::precompute` initializes runtime tables before the first hash.
+- `sinsemilla::is_precomputed` reports initialization for callers using
+  `test-dependencies`.
+
 ## [0.2.0] - 2026-09-25
 ### Added
 - `sinsemilla::CommitDomain::new_with_separate_domains`

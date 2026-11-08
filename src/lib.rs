@@ -27,6 +27,15 @@ mod sinsemilla_s;
 #[cfg_attr(docsrs, doc(cfg(feature = "std")))]
 mod table;
 pub use sinsemilla_s::SINSEMILLA_S;
+#[cfg(feature = "runtime-precomputation")]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime-precomputation")))]
+pub use table::precompute;
+#[cfg(all(feature = "runtime-precomputation", feature = "test-dependencies"))]
+#[cfg_attr(
+    docsrs,
+    doc(cfg(all(feature = "runtime-precomputation", feature = "test-dependencies")))
+)]
+pub use table::is_precomputed;
 
 /// Number of bits of each message piece in $\mathsf{SinsemillaHashToPoint}$
 pub const K: usize = 10;
