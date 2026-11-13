@@ -49,6 +49,7 @@ fn weighted_checks_match_spec_for_random_domains() {
     }
 }
 
+#[cfg(feature = "runtime-precomputation")]
 #[test]
 fn precompute_initializes_shared_tables_and_covered_first_steps() {
     for _ in 0..2 {
@@ -81,6 +82,7 @@ fn first_steps_preserve_forced_exceptions() {
     }
 }
 
+#[cfg(feature = "runtime-precomputation")]
 #[test]
 fn prewarmed_batches_match_the_specification() {
     super::precompute();
