@@ -13,8 +13,8 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/zcash/sinsemilla"
 categories = ["cryptography"]
 
-# docs.rs builds with no features by default, which would document neither the `std`
-# feature's tables nor the `test-dependencies` constructors. `--cfg docsrs` turns on the
+# docs.rs builds with no features by default, hiding the `runtime-precomputation`
+# tables and `test-dependencies` constructors. `--cfg docsrs` turns on the
 # `doc_cfg` feature gate in `lib.rs`, so the items those features add are labelled with
 # the feature that provides them.
 [package.metadata.docs.rs]
@@ -33,6 +33,8 @@ rand = "0.10"
 [features]
 std = []
 runtime-precomputation = ["std"]
+# Guarantee coverage of the Orchard Merkle hash, including its exceptional-case checks.
+merkle-table = ["runtime-precomputation"]
 test-dependencies = []
 
 [[bench]]
