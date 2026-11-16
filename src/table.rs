@@ -362,44 +362,63 @@ impl TableDomain {
             "the message is longer than the tables cover",
         );
 
-        let n = words.len();
-        // The position-weighted prefix P_i, which is [2^(n-i)] Acc_i.
-        let mut acc = TABLES.starts[self.domain][n - 1].to_curve();
-        let mut exceptional = Choice::from(0u8);
-
-        for (i, &word) in words.iter().enumerate() {
-            let word = usize::from(word);
-            assert!(word < S_LEN, "word is not a K-bit value");
-
-            // Position i adds T = [2^(n-1-i)] S, and the specification's three
-            // exceptional conditions on Acc_i rescale onto P_i by the factor [2^(n-i)]:
-            //   Acc = S    and    Acc = -S     become    P = +-[2] T
-            //   S = -[2] Acc                   becomes   P = -T
-            // The first pair is one x-coordinate test against the entry one weight up.
-            // The second says the addition below lands on the identity, so it needs no
-            // test of its own.
-            let addend = &TABLES.generators[n - 1 - i][word];
-            let doubled = &TABLES.generators[n - i][word];
-
-            exceptional |= has_x_of(&acc, doubled);
-            acc += addend;
-            exceptional |= acc.is_identity();
-        }
-
-        CtOption::new(acc, !exceptional)
+        evaluate(
+            TABLES.starts[self.domain][words.len() - 1].to_curve(),
+            words,
+        )
     }
+}
+
+/// The table evaluation of `words` from the start point $P_0 = \[2^N\] \mathcal{Q}$, for
+/// a message of $N$ words.
+///
+/// [`TableDomain::hash_to_point`] passes the stored start of its domain. It is separate so
+/// that the tests can pass a start chosen to reach each exceptional case: for a stored
+/// $\mathcal{Q}$ that would take a discrete logarithm, so without this no test could
+/// reach $\bot$ through the tables.
+///
+/// # Panics
+///
+/// Panics if `words` is longer than [`LONGEST_MESSAGE_WORDS`] or contains a word that is
+/// not a [`K`]-bit value.
+fn evaluate(start: pallas::Point, words: &[u16]) -> CtOption<pallas::Point> {
+    let n = words.len();
+    // The position-weighted prefix P_i, which is [2^(n-i)] Acc_i.
+    let mut acc = start;
+    let mut exceptional = Choice::from(0u8);
+
+    for (i, &word) in words.iter().enumerate() {
+        let word = usize::from(word);
+        assert!(word < S_LEN, "word is not a K-bit value");
+
+        // Position i adds T = [2^(n-1-i)] S, and the specification's three
+        // exceptional conditions on Acc_i rescale onto P_i by the factor [2^(n-i)]:
+        //   Acc = S    and    Acc = -S     become    P = +-[2] T
+        //   S = -[2] Acc                   becomes   P = -T
+        // The first pair is one x-coordinate test against the entry one weight up.
+        // The second says the addition below lands on the identity, so it needs no
+        // test of its own.
+        let addend = &TABLES.generators[n - 1 - i][word];
+        let doubled = &TABLES.generators[n - i][word];
+
+        exceptional |= has_x_of(&acc, doubled);
+        acc += addend;
+        exceptional |= acc.is_identity();
+    }
+
+    CtOption::new(acc, !exceptional)
 }
 
 #[cfg(test)]
 mod tests {
     use alloc::{vec, vec::Vec};
 
-    use group::{Curve, CurveAffine as _, Group, GroupEncoding};
+    use group::{Curve, CurveAffine as _, Group, GroupEncoding, ff::Field};
     use pasta_curves::{arithmetic::CurveExt, pallas};
 
     use super::{
         KNOWN_DOMAINS, LONGEST_MESSAGE_WORDS, ROW_BYTES, TABLE_LIMIT, TABLES, TableDomain, Tables,
-        WEIGHTS, has_x_of,
+        WEIGHTS, evaluate, has_x_of,
     };
     use crate::{HashDomain, K, Q_PERSONALIZATION, S_PERSONALIZATION};
 
@@ -654,5 +673,101 @@ mod tests {
         let built = Tables::build();
         assert_eq!(built.generators, TABLES.generators);
         assert_eq!(built.starts, TABLES.starts);
+    }
+
+    /// The bits of a message already split into words, least-significant bit first within
+    /// each word: the inverse of [`words`] on a whole number of words.
+    fn bits(words: &[u16]) -> Vec<bool> {
+        words
+            .iter()
+            .flat_map(|&word| (0..K).map(move |b| (word >> b) & 1 == 1))
+            .collect()
+    }
+
+    /// $1/2$ modulo the order of Pallas, which is odd.
+    fn half() -> pallas::Scalar {
+        pallas::Scalar::from(2).invert().unwrap()
+    }
+
+    /// The generator $S_m$ for the word `word`.
+    fn generator(word: u16) -> pallas::Point {
+        crate::s_generator(usize::from(word)).to_curve()
+    }
+
+    /// For each of the specification's three exceptional relations, the accumulator
+    /// $\mathsf{Acc}$ that makes adding the word `word` exceptional.
+    fn exceptional_accumulators(word: u16) -> [(&'static str, pallas::Point); 3] {
+        let s = generator(word);
+        [
+            ("Acc = S", s),
+            ("Acc = -S", -s),
+            ("S = -[2] Acc", -(s * half())),
+        ]
+    }
+
+    /// The $\mathcal{Q}$ whose accumulator is `target` just before the word at index `i`.
+    ///
+    /// That accumulator is $\[2^i\] \mathcal{Q} + \sum_{k < i} \[2^{i-1-k}\] S_{m_k}$, and
+    /// $2$ is invertible modulo the odd group order, so it can be solved for
+    /// $\mathcal{Q}$. This is the discrete logarithm a stored $\mathcal{Q}$ would need,
+    /// sidestepped by choosing $\mathcal{Q}$ instead.
+    fn q_reaching(words: &[u16], i: usize, target: pallas::Point) -> pallas::Point {
+        let prefix = words[..i]
+            .iter()
+            .fold(pallas::Point::identity(), |acc, &word| {
+                acc.double() + generator(word)
+            });
+        (target - prefix) * half().pow_vartime([i as u64])
+    }
+
+    /// The table start $P_0 = \[2^N\] \mathcal{Q}$ for a message of `n` words.
+    fn start(q: pallas::Point, n: usize) -> pallas::Point {
+        (0..n).fold(q, |point, _| point.double())
+    }
+
+    /// [`evaluate`] from a chosen start agrees with the specification-shaped evaluator
+    /// from the matching $\mathcal{Q}$, which pins the start convention the test below
+    /// relies on to the one [`TableDomain::hash_to_point`] uses.
+    #[test]
+    fn evaluate_from_a_chosen_start_agrees_with_generic() {
+        let q = pallas::Point::random(&mut rand::rng());
+        let message = words(&random_bits(TEST_WORDS * K));
+
+        assert_eq!(
+            unwrap(evaluate(start(q, message.len()), &message)).to_bytes(),
+            unwrap(HashDomain::from_Q(q).hash_to_point(bits(&message).into_iter())).to_bytes(),
+        );
+    }
+
+    /// The tables return bottom on each of the three exceptional relations, whether it
+    /// arises at the first word, a middle one or the last, and bottom then survives every
+    /// word after it. The specification-shaped evaluator, from the same $\mathcal{Q}$,
+    /// agrees on every case.
+    ///
+    /// No stored domain can reach these inputs, so this is the only test of the
+    /// `has_x_of` and identity flags in [`evaluate`].
+    #[test]
+    fn reports_bottom_on_each_exceptional_case() {
+        let n = TEST_WORDS;
+        let message = words(&random_bits(n * K));
+
+        for i in [0, n / 2, n - 1] {
+            for (relation, target) in exceptional_accumulators(message[i]) {
+                let q = q_reaching(&message, i, target);
+
+                assert!(
+                    bool::from(evaluate(start(q, n), &message).is_none()),
+                    "tables: {relation} at word {i} of {n}",
+                );
+                assert!(
+                    bool::from(
+                        HashDomain::from_Q(q)
+                            .hash_to_point(bits(&message).into_iter())
+                            .is_none()
+                    ),
+                    "specification: {relation} at word {i} of {n}",
+                );
+            }
+        }
     }
 }
