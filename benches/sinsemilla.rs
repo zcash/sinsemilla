@@ -18,9 +18,18 @@ const NOTE_COMMIT_BITS: usize = 256 + 256 + 64 + 255 + 255;
 
 /// Length in bits of an Orchard `CommitIvk` message: `ak` and `nk`, each `L_ORCHARD_BASE`.
 ///
-/// Only the table benchmarks hash at this length, and they need the `std` feature.
-#[cfg(feature = "std")]
+/// Only the table benchmarks hash at this length, and they need the
+/// `runtime-precomputation` feature.
+#[cfg(feature = "runtime-precomputation")]
 const COMMIT_IVK_BITS: usize = 255 + 255;
+
+/// Smallest `SINSEMILLA_TABLE_LIMIT`, in bytes, whose tables cover every message the
+/// table benchmarks hash: 110 weight rows of 64 KiB, for the 109-word note commitment.
+///
+/// No default budget reaches it, so below it the longer messages would be hashed with the
+/// generic evaluator on both sides while still reported under the `table` label.
+#[cfg(feature = "runtime-precomputation")]
+const FULL_TABLE_LIMIT: usize = 110 << 16;
 
 /// Number of messages in the batched benchmark.
 const BATCH: usize = 1 << 10;
@@ -129,8 +138,23 @@ fn commit(c: &mut Criterion) {
 ///   exercises only the fraction of the table that one message touches.
 /// - `many-messages` walks `BATCH` distinct messages, so each hash reads a fresh scatter
 ///   of lines and the working set is the whole table. This is what a wallet sees.
-#[cfg(feature = "std")]
+///
+/// Runs only when the crate is built with at least [`FULL_TABLE_LIMIT`]:
+///
+/// ```text
+/// SINSEMILLA_TABLE_LIMIT=7208960 cargo bench --features runtime-precomputation -- table
+/// ```
+#[cfg(feature = "runtime-precomputation")]
 fn table(c: &mut Criterion) {
+    let limit = option_env!("SINSEMILLA_TABLE_LIMIT").and_then(|limit| limit.parse().ok());
+    if limit.is_none_or(|limit: usize| limit < FULL_TABLE_LIMIT) {
+        eprintln!(
+            "table: skipped, the tables do not cover every benchmarked length; \
+             build with SINSEMILLA_TABLE_LIMIT={FULL_TABLE_LIMIT} or more"
+        );
+        return;
+    }
+
     let mut group = c.benchmark_group("table");
     for (label, personalization, bits) in [
         ("merkle-crh", "z.cash:Orchard-MerkleCRH", MERKLE_HASH_BITS),
@@ -168,8 +192,8 @@ fn table(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(feature = "std")]
+#[cfg(feature = "runtime-precomputation")]
 criterion_group!(benches, hash, hash_batch, domain, commit, table);
-#[cfg(not(feature = "std"))]
+#[cfg(not(feature = "runtime-precomputation"))]
 criterion_group!(benches, hash, hash_batch, domain, commit);
 criterion_main!(benches);
