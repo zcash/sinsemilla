@@ -17,7 +17,19 @@ permissions: {}
 
 jobs:
   clippy-beta:
-    name: Clippy (beta)
+    name: Clippy (beta) with ${{ matrix.features }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each feature on its own as well as all together, so a `#[cfg]` that only
+        # holds under one combination cannot pass unnoticed. The `--features=x`
+        # spelling keeps each entry a single argument.
+        features:
+          - --no-default-features
+          - --features=std
+          - --features=runtime-precomputation
+          - --features=test-dependencies
+          - --all-features
     timeout-minutes: 30
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -46,5 +58,5 @@ jobs:
         continue-on-error: true
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
-          check-args: --all-features --all-targets
+          check-args: ${{ matrix.features }} --all-targets
           warn: clippy::all

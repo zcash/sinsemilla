@@ -13,7 +13,19 @@ permissions: {}
 
 jobs:
   clippy:
-    name: Clippy (MSRV)
+    name: Clippy (MSRV) with ${{ matrix.features }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Each feature on its own as well as all together, so a `#[cfg]` that only
+        # holds under one combination cannot pass unnoticed. The `--features=x`
+        # spelling keeps each entry a single argument.
+        features:
+          - --no-default-features
+          - --features=std
+          - --features=runtime-precomputation
+          - --features=test-dependencies
+          - --all-features
     timeout-minutes: 30
     runs-on: ubuntu-latest
     permissions:
@@ -30,5 +42,21 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           # cargo-level flags go in `check-args` (before the `--`); lint levels
           # go in `deny`/`warn` (the action places them after the `--`).
-          check-args: --all-features --all-targets
+          check-args: ${{ matrix.features }} --all-targets
           deny: warnings
+
+  # `Clippy (MSRV)` is a required check on `main`, and a matrix job reports one
+  # check per entry instead, so this job carries the required name and passes
+  # only when every entry did.
+  clippy-required:
+    name: Clippy (MSRV)
+    needs: clippy
+    # `always()` is load-bearing: without it this job is skipped when an entry
+    # fails, and GitHub treats a skipped required check as satisfied.
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Determine whether every feature set passed
+        env:
+          RESULT: ${{ needs.clippy.result }}
+        run: test "$RESULT" = success
