@@ -18,18 +18,9 @@ const NOTE_COMMIT_BITS: usize = 256 + 256 + 64 + 255 + 255;
 
 /// Length in bits of an Orchard `CommitIvk` message: `ak` and `nk`, each `L_ORCHARD_BASE`.
 ///
-/// Only the table benchmarks hash at this length, and they need the
-/// `runtime-precomputation` feature.
-#[cfg(feature = "runtime-precomputation")]
+/// Only the table benchmarks hash at this length, and they need the `std` feature.
+#[cfg(feature = "std")]
 const COMMIT_IVK_BITS: usize = 255 + 255;
-
-/// Smallest `SINSEMILLA_TABLE_LIMIT`, in bytes, whose tables cover every message the
-/// table benchmarks hash: 110 weight rows of 64 KiB, for the 109-word note commitment.
-///
-/// No default budget reaches it, so below it the longer messages would be hashed with the
-/// generic evaluator on both sides while still reported under the `table` label.
-#[cfg(feature = "runtime-precomputation")]
-const FULL_TABLE_LIMIT: usize = 110 << 16;
 
 /// Number of messages in the batched benchmark.
 const BATCH: usize = 1 << 10;
@@ -138,23 +129,8 @@ fn commit(c: &mut Criterion) {
 ///   exercises only the fraction of the table that one message touches.
 /// - `many-messages` walks `BATCH` distinct messages, so each hash reads a fresh scatter
 ///   of lines and the working set is the whole table. This is what a wallet sees.
-///
-/// Runs only when the crate is built with at least [`FULL_TABLE_LIMIT`]:
-///
-/// ```text
-/// SINSEMILLA_TABLE_LIMIT=7208960 cargo bench --features runtime-precomputation -- table
-/// ```
-#[cfg(feature = "runtime-precomputation")]
+#[cfg(feature = "std")]
 fn table(c: &mut Criterion) {
-    let limit = option_env!("SINSEMILLA_TABLE_LIMIT").and_then(|limit| limit.parse().ok());
-    if limit.is_none_or(|limit: usize| limit < FULL_TABLE_LIMIT) {
-        eprintln!(
-            "table: skipped, the tables do not cover every benchmarked length; \
-             build with SINSEMILLA_TABLE_LIMIT={FULL_TABLE_LIMIT} or more"
-        );
-        return;
-    }
-
     let mut group = c.benchmark_group("table");
     for (label, personalization, bits) in [
         ("merkle-crh", "z.cash:Orchard-MerkleCRH", MERKLE_HASH_BITS),
@@ -192,8 +168,37 @@ fn table(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(feature = "runtime-precomputation")]
-criterion_group!(benches, hash, hash_batch, domain, commit, table);
-#[cfg(not(feature = "runtime-precomputation"))]
-criterion_group!(benches, hash, hash_batch, domain, commit);
+/// Merkle parent hashes one at a time vs [`HashDomain::hash_many_vartime`], per tree-level width
+fn hash_many(c: &mut Criterion) {
+    let domain = HashDomain::new("z.cash:Orchard-MerkleCRH");
+    let msgs: Vec<_> = (0..BATCH).map(|_| random_bits(MERKLE_HASH_BITS)).collect();
+    let words: Vec<[u16; MERKLE_HASH_BITS / K]> = msgs
+        .iter()
+        .map(|msg| core::array::from_fn(|i| (0..K).map(|b| u16::from(msg[K * i + b]) << b).sum()))
+        .collect();
+
+    let mut group = c.benchmark_group("hash_many");
+    for width in [1, 16, 63, 64, 256, BATCH] {
+        let msgs = &msgs[..width];
+        group.throughput(Throughput::Elements(width as u64));
+        group.bench_with_input(BenchmarkId::new("hash", width), msgs, |b, msgs| {
+            b.iter(|| {
+                msgs.iter()
+                    .map(|msg| domain.hash(black_box(msg).iter().copied()))
+                    .collect::<Vec<_>>()
+            })
+        });
+        group.bench_with_input(
+            BenchmarkId::new("vartime", width),
+            &words[..width],
+            |b, words| b.iter(|| domain.hash_many_vartime(black_box(words))),
+        );
+    }
+    group.finish();
+}
+
+#[cfg(feature = "std")]
+criterion_group!(benches, hash, hash_batch, hash_many, domain, commit, table);
+#[cfg(not(feature = "std"))]
+criterion_group!(benches, hash, hash_batch, hash_many, domain, commit);
 criterion_main!(benches);
