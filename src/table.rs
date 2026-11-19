@@ -111,8 +111,8 @@
 //! against one doubling and one mixed addition per word for [`HashDomain`]. The
 //! benchmarks measure both; see `benches/sinsemilla.rs`.
 //!
-//! This module needs the `std` feature, for [`std::sync::LazyLock`]. A `no_std` build
-//! has no tables and uses [`HashDomain`].
+//! The `runtime-precomputation` feature enables these tables and `std`, for
+//! [`std::sync::LazyLock`]. Without it, [`HashDomain`] uses the specification's recurrence.
 //!
 //! [`C`]: crate::C
 //! [`HashDomain`]: crate::HashDomain
@@ -363,8 +363,8 @@ const KNOWN_DOMAIN_WORDS: [usize; 3] = [52, 109, 51];
 /// Per known domain, at its [`KNOWN_DOMAIN_WORDS`] length `n`: $P_1$ for first word `j` =
 /// $\[2^n\] \mathcal{Q} + \[2^{n-1}\] S_j$, `None` where position 0 is $\bot$
 ///
-/// - Built on first batch use or by [`precompute`] (one 64 KiB row per covered domain,
-///   outside the generator-row budget).
+/// - Built on first batch use or by `precompute()`, outside the generator-row budget.
+///   Row contents occupy `S_LEN * core::mem::size_of::<Option<Entry>>()` bytes per covered domain.
 static FIRST_STEPS: [LazyLock<Vec<Option<Entry>>>; 3] = [
     LazyLock::new(|| first_steps(0)),
     LazyLock::new(|| first_steps(1)),
@@ -902,6 +902,7 @@ mod tests {
     ///
     /// Without this, every test above would still pass if `new` had quietly stopped
     /// wiring the tables in.
+    #[cfg(feature = "runtime-precomputation")]
     #[test]
     fn hash_domain_dispatches_to_the_tables() {
         for personalization in KNOWN_DOMAINS {
@@ -1065,6 +1066,7 @@ mod tests {
     #[test]
     fn unknown_personalizations_have_no_table() {
         assert!(TableDomain::new("z.cash:test-Sinsemilla").is_none());
+        #[cfg(feature = "runtime-precomputation")]
         assert!(HashDomain::new("z.cash:test-Sinsemilla").tabled.is_none());
     }
 

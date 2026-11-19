@@ -23,7 +23,8 @@ mod addition;
 use self::addition::IncompletePoint;
 mod known_domains;
 mod sinsemilla_s;
-#[cfg(feature = "runtime-precomputation")]
+#[cfg(any(feature = "runtime-precomputation", all(test, feature = "std")))]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime-precomputation")))]
 mod table;
 pub use sinsemilla_s::SINSEMILLA_S;
 #[cfg(feature = "runtime-precomputation")]

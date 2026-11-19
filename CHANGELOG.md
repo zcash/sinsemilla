@@ -22,6 +22,9 @@ and this project adheres to Rust's notion of
 - `HashDomain::precomputed_message_words` reports initialized table coverage for
   callers using `test-dependencies`.
 
+### Fixed
+- Unit tests compile with `std` enabled and `runtime-precomputation` disabled.
+
 ## [0.2.0] - 2026-09-25
 ### Added
 - `sinsemilla::CommitDomain::new_with_separate_domains`
