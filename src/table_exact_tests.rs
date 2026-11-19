@@ -7,17 +7,19 @@ use rand::{RngExt, SeedableRng, rngs::StdRng};
 use super::{LONGEST_MESSAGE_WORDS, TableDomain};
 use crate::{HashDomain, K, s_generator};
 
-fn check(q: pallas::Point, words: &[u16]) {
+fn check(q: pallas::Point, words: &[u16]) -> bool {
     let initial = (0..words.len()).fold(q, |point, _| point.double());
     let bits = words
         .iter()
         .flat_map(|word| (0..K).map(move |bit| word & (1 << bit) != 0));
     let expected = HashDomain::from_Q(q).hash_to_point(bits);
     let actual = TableDomain::evaluate(words, initial);
+    let is_bottom = bool::from(actual.is_none());
     assert_eq!(
         Option::<pallas::Point>::from(actual),
         Option::<pallas::Point>::from(expected),
     );
+    is_bottom
 }
 
 #[test]
@@ -29,12 +31,18 @@ fn weighted_checks_match_spec_for_forced_exceptions() {
         let s = s_generator(usize::from(words[position])).to_curve();
         // The first three are exactly the three exceptional relations. Identity
         // checks also cover non-protocol test domains. S = 2A is not exceptional.
-        for target in [s, -s, -s * half, pallas::Point::identity(), s * half] {
+        for (case, target) in [s, -s, -s * half, pallas::Point::identity(), s * half]
+            .into_iter()
+            .enumerate()
+        {
             // Solve backwards for Q so the recurrence reaches target at this position.
             let q = words[..position].iter().rev().fold(target, |acc, word| {
                 (acc - s_generator(usize::from(*word))) * half
             });
-            check(q, &words);
+            let is_bottom = check(q, &words);
+            if case < 3 {
+                assert!(is_bottom, "exceptional case {case} at word {position}");
+            }
         }
     }
 }
