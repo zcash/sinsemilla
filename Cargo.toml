@@ -20,6 +20,7 @@ rustdoc-args = ["--cfg", "docsrs"]
 
 [dependencies]
 group = "0.14"
+once_cell = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 pasta_curves = { version = "0.6", default-features = false, features = ["alloc"] }
 subtle = { version = "2.3", default-features = false }
 
@@ -29,7 +30,7 @@ rand = "0.10"
 
 [features]
 std = []
-runtime-precomputation = ["std"]
+runtime-precomputation = ["dep:once_cell"]
 test-dependencies = []
 
 [[bench]]

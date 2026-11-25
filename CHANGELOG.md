@@ -15,6 +15,10 @@ and this project adheres to Rust's notion of
   on Android, and 1 MiB everywhere else. Set `SINSEMILLA_TABLE_LIMIT`, in bytes,
   at build time to change it.
 
+  Runtime precomputation supports `no_std` with `alloc` on targets with
+  pointer-sized atomics. Concurrent first calls may temporarily build multiple
+  copies of the tables; only one copy is retained.
+
   The budget decides how long a message the tables cover, at 64 KiB per word, and
   a message longer than that is hashed as before. Orchard hashes 51 words for
   `CommitIvk`, 52 for a Merkle parent hash and 109 for a note commitment, so at

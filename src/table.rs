@@ -91,12 +91,13 @@
 //!
 //! # Cost
 //!
-//! The tables are built once, on first use, and live for the rest of the process. The
+//! The tables are initialized on first use and live for the rest of the process. The
 //! generator table is [`WEIGHTS`] rows of $2^K$ affine points, 64 KiB per row, and the
 //! start table is one point per known domain per covered length, so the budget is what
-//! decides the memory and the build cost. Whichever call touches the tables first pays
-//! for building them, and every other thread waits on it. See [`TABLE_LIMIT`] for the
-//! per-target budgets and how to override them.
+//! decides the memory and the build cost. Concurrent first calls may each build a copy;
+//! one is retained and the others are dropped. Peak initialization memory and computation
+//! can therefore scale with the number of concurrent initializers. See [`TABLE_LIMIT`]
+//! for the per-target budgets and how to override them.
 //!
 //! Building is one doubling and one batch inversion per row over $2^K$ points, and no
 //! hashes to the curve at all: both the generators and the domain points are constants
@@ -106,17 +107,17 @@
 //! against one doubling and one mixed addition per word for [`HashDomain`]. The
 //! benchmarks measure both; see `benches/sinsemilla.rs`.
 //!
-//! This module needs the `std` feature, for [`std::sync::LazyLock`]. A `no_std` build
-//! has no tables and uses [`HashDomain`].
+//! This module needs `alloc` and pointer-sized atomics, but not `std`. Enable it with
+//! the `runtime-precomputation` feature.
 //!
 //! [`C`]: crate::C
 //! [`HashDomain`]: crate::HashDomain
 //! [`HashDomain::hash_to_point`]: crate::HashDomain::hash_to_point
 
-use alloc::{vec, vec::Vec};
-use std::sync::LazyLock;
+use alloc::{boxed::Box, vec, vec::Vec};
 
 use group::{Curve, CurveAffine as _, Group};
+use once_cell::race::OnceBox;
 use pasta_curves::{
     arithmetic::{CurveAffine as _, CurveExt},
     pallas,
@@ -296,7 +297,10 @@ impl Tables {
     }
 }
 
-static TABLES: LazyLock<Tables> = LazyLock::new(Tables::build);
+fn tables() -> &'static Tables {
+    static TABLES: OnceBox<Tables> = OnceBox::new();
+    TABLES.get_or_init(|| Box::new(Tables::build()))
+}
 
 /// Whether `p` has the affine $x$-coordinate of `target`, equivalently whether
 /// $p = \pm \mathsf{target}$.
@@ -317,7 +321,7 @@ fn has_x_of(p: &pallas::Point, target: &pallas::Affine) -> Choice {
 
 /// A hash domain that has a start table, and so can be hashed with the tables.
 ///
-/// Construct one once and hash many messages with it. The first construction builds the
+/// Construct one once and hash many messages with it. The first hash initializes the
 /// tables; see the module documentation for what that costs.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct TableDomain {
@@ -334,7 +338,7 @@ impl TableDomain {
     pub(crate) fn new(personalization: &str) -> Option<Self> {
         if LONGEST_MESSAGE_WORDS == 0 {
             // The budget affords no usable table. Returning here is what keeps the
-            // `LazyLock` from ever being forced, so such a build has no tables at all
+            // tables from ever being initialized, so such a build has no tables at all
             // rather than empty ones.
             return None;
         }
@@ -363,7 +367,7 @@ impl TableDomain {
         );
 
         evaluate(
-            TABLES.starts[self.domain][words.len() - 1].to_curve(),
+            tables().starts[self.domain][words.len() - 1].to_curve(),
             words,
         )
     }
@@ -386,6 +390,7 @@ fn evaluate(start: pallas::Point, words: &[u16]) -> CtOption<pallas::Point> {
         words.len() <= LONGEST_MESSAGE_WORDS,
         "the message is longer than the tables cover",
     );
+    let tables = tables();
     let n = words.len();
     // The position-weighted prefix P_i, which is [2^(n-i)] Acc_i.
     let mut acc = start;
@@ -402,8 +407,8 @@ fn evaluate(start: pallas::Point, words: &[u16]) -> CtOption<pallas::Point> {
         // The first pair is one x-coordinate test against the entry one weight up.
         // The second says the addition below lands on the identity, so it needs no
         // test of its own.
-        let addend = &TABLES.generators[n - 1 - i][word];
-        let doubled = &TABLES.generators[n - i][word];
+        let addend = &tables.generators[n - 1 - i][word];
+        let doubled = &tables.generators[n - i][word];
 
         exceptional |= has_x_of(&acc, doubled);
         acc += addend;
@@ -421,8 +426,8 @@ mod tests {
     use pasta_curves::{arithmetic::CurveExt, pallas};
 
     use super::{
-        KNOWN_DOMAINS, LONGEST_MESSAGE_WORDS, ROW_BYTES, TABLE_LIMIT, TABLES, TableDomain, Tables,
-        WEIGHTS, evaluate, has_x_of,
+        KNOWN_DOMAINS, LONGEST_MESSAGE_WORDS, ROW_BYTES, TABLE_LIMIT, TableDomain, Tables, WEIGHTS,
+        evaluate, has_x_of, tables,
     };
     use crate::{HashDomain, K, Q_PERSONALIZATION, S_PERSONALIZATION};
 
@@ -577,7 +582,7 @@ mod tests {
         let mut expected: Vec<pallas::Point> =
             (0..1u32 << K).map(|j| hasher(&j.to_le_bytes())).collect();
 
-        for (weight, row) in TABLES.generators.iter().enumerate() {
+        for (weight, row) in tables().generators.iter().enumerate() {
             for (w, (entry, expected)) in row.iter().zip(expected.iter()).enumerate() {
                 assert_eq!(
                     entry.to_curve().to_bytes(),
@@ -602,7 +607,7 @@ mod tests {
             for n in 1..=LONGEST_MESSAGE_WORDS {
                 expected = expected.double();
                 assert_eq!(
-                    TABLES.starts[d][n - 1].to_curve().to_bytes(),
+                    tables().starts[d][n - 1].to_curve().to_bytes(),
                     expected.to_bytes(),
                     "{personalization}, [2^{n}] Q",
                 );
@@ -658,8 +663,8 @@ mod tests {
 
     #[test]
     fn the_table_fits_the_budget() {
-        assert_eq!(TABLES.generators.len(), WEIGHTS);
-        assert!(TABLES.generators.iter().all(|row| row.len() == 1 << K));
+        assert_eq!(tables().generators.len(), WEIGHTS);
+        assert!(tables().generators.iter().all(|row| row.len() == 1 << K));
     }
 
     /// An unknown personalization has no start table, so it has no table domain and its
@@ -670,13 +675,41 @@ mod tests {
         assert!(HashDomain::new("z.cash:test-Sinsemilla").tabled.is_none());
     }
 
-    /// Building the tables twice gives the same tables, which is what makes the
-    /// process-lifetime `LazyLock` safe to share.
+    /// Independent initializations produce identical tables.
     #[test]
     fn building_is_deterministic() {
         let built = Tables::build();
-        assert_eq!(built.generators, TABLES.generators);
-        assert_eq!(built.starts, TABLES.starts);
+        assert_eq!(built.generators, tables().generators);
+        assert_eq!(built.starts, tables().starts);
+    }
+
+    #[test]
+    fn initialization_reuses_the_same_tables() {
+        assert!(core::ptr::eq(tables(), tables()));
+    }
+
+    #[cfg(feature = "std")]
+    #[test]
+    fn concurrent_initialization_shares_the_same_tables() {
+        let cell = once_cell::race::OnceBox::new();
+        let barrier = std::sync::Barrier::new(4);
+
+        std::thread::scope(|scope| {
+            let handles: Vec<_> = (0..4)
+                .map(|_| {
+                    scope.spawn(|| {
+                        cell.get_or_init(|| {
+                            barrier.wait();
+                            alloc::boxed::Box::new(Tables::build())
+                        })
+                    })
+                })
+                .collect();
+
+            let mut results = handles.into_iter().map(|handle| handle.join().unwrap());
+            let first = results.next().unwrap();
+            assert!(results.all(|result| core::ptr::eq(first, result)));
+        });
     }
 
     /// The bits of a message already split into words, least-significant bit first within

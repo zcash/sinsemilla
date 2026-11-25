@@ -87,7 +87,7 @@ jobs:
         run: git diff --exit-code
 
   no-std:
-    name: Check no-std target ${{ matrix.target }}
+    name: Check no-std target ${{ matrix.target }} with ${{ matrix.features }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -100,6 +100,10 @@ jobs:
           - thumbv7em-none-eabihf
           - wasm32-unknown-unknown
           - wasm32-wasip1
+        features: [--no-default-features]
+        include:
+          - target: thumbv7em-none-eabihf
+            features: --features=runtime-precomputation
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -113,9 +117,10 @@ jobs:
           --verbose
           --locked
           --target "${TARGET}"
-          --no-default-features
+          "${FEATURES}"
         env:
           TARGET: ${{ matrix.target }}
+          FEATURES: ${{ matrix.features }}
 
   wallet-sdk-targets:
     name: Check wallet SDK target ${{ matrix.target }}
@@ -144,9 +149,7 @@ jobs:
           TARGET: ${{ matrix.target }}
       # `--lib` only: the dev-dependencies build C code through `cc`, which needs
       # the target's toolchain (the NDK, or an Apple SDK) that this runner lacks.
-      # `--all-features` because the wallet SDKs ship with `std`, and this is the
-      # only job that compiles the lookup tables for a mobile target, where their
-      # size budget differs from the default.
+      # Include runtime precomputation to check each mobile target's table budget.
       - name: Check
         run: cargo check --verbose --lib --all-features --target "${TARGET}"
         env:
