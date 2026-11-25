@@ -198,10 +198,9 @@ impl HashDomain {
     /// - Word `i` = [`lebs2ip_k`] of message bits `K·i .. K·(i+1)` (final word zero-padded, as
     ///   the specification pads)
     /// - Variable time: public inputs only, such as Merkle tree nodes
-    /// - $\bot$ on exactly the specification's inputs (tabled paths proved in sinsemilla-proofs,
-    ///   `weightedHashToPoint_eq_hashToPoint`; the fallback is [`HashDomain::hash_to_point`])
+    /// - $\bot$ on exactly the same inputs as [`HashDomain::hash_to_point`]
     /// - Messages the tables cover: affine accumulators stepped together (one shared inversion
-    ///   per word), or Jacobian ones below a lockstep's worth of messages
+    ///   per word), or projective accumulators with one shared final inversion for smaller batches
     /// - Otherwise: [`HashDomain::hash_to_point`] per message, one shared inversion
     ///
     /// # Panics
@@ -460,7 +459,7 @@ mod tests {
         }
     }
 
-    /// Lockstep, Jacobian (tabled, by width) and per-message fallback alike, vs `hash` on the bits
+    /// Lockstep, XYZZ, and the per-message fallback, vs `hash` on the bits
     #[test]
     fn hash_many_vartime_equals_hash_per_message() {
         let domains = [
@@ -489,7 +488,7 @@ mod tests {
         };
 
         for (name, domain) in &domains {
-            // 8 = `table::LOCKSTEP_LANES` (Jacobian below, lockstep from, given a 52-word budget)
+            // At a budget covering 52 words, 7 and 8 straddle the affine lockstep threshold.
             for count in [0, 1, 7, 8, 65] {
                 let msgs = &merkle[..count];
                 let expected: Vec<Option<pallas::Base>> = msgs

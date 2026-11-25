@@ -496,11 +496,11 @@ impl TableDomain {
         })
     }
 
-    /// [`TableDomain::hash_many_vartime`] below [`LOCKSTEP_LANES`]: one Jacobian accumulator per
-    /// message, one shared inversion
+    /// [`TableDomain::hash_many_vartime`] below [`LOCKSTEP_LANES`]: one XYZZ accumulator per
+    /// message, one shared inversion.
     ///
-    /// - Coincident x ($\bot$ or doubling, unreachable by chance) → [`TableDomain::hash_to_point`]
-    /// - No $\bot$ hashed silently: `jacobianStep_none_of_weightedStep_none` (sinsemilla-proofs)
+    /// Coincident x (including both $\bot$ and ordinary doublings) falls back to
+    /// [`TableDomain::hash_to_point`].
     fn hash_each_vartime(
         &self,
         tables: &Tables,
@@ -509,7 +509,7 @@ impl TableDomain {
         words: &[u16],
         n: usize,
     ) -> Vec<CtOption<pallas::Base>> {
-        let accumulators: Vec<Option<Jacobian>> = words
+        let accumulators: Vec<Option<Xyzz>> = words
             .chunks_exact(n)
             .map(|msg| {
                 let (acc, from) = match first_steps {
@@ -518,40 +518,40 @@ impl TableDomain {
                 };
                 // position i: rows (n − 1 − i, n − i) = (addends, doubled)
                 let rows = tables.generators[..=n].windows(2).rev();
-                msg.iter().zip(rows).skip(from).try_fold(
-                    Jacobian::from(acc),
-                    |acc, (&word, rows)| {
+                msg.iter()
+                    .zip(rows)
+                    .skip(from)
+                    .try_fold(Xyzz::from(acc), |acc, (&word, rows)| {
                         let j = usize::from(word);
                         acc.step(&rows[0][j], &rows[1][j])
-                    },
-                )
+                    })
             })
             .collect();
 
-        // Montgomery's trick, one vartime inversion (z != 0: madd's z = 2·z·h with h != 0)
-        let mut zs: Vec<pallas::Base> = accumulators.iter().flatten().map(|acc| acc.z).collect();
+        // Batch-invert the nonzero Z² values directly: the affine x is X / Z².
+        let mut zzs: Vec<pallas::Base> = accumulators.iter().flatten().map(|acc| acc.zz).collect();
         let mut product = pallas::Base::ONE;
-        let products_before: Vec<pallas::Base> = zs
+        let products_before: Vec<pallas::Base> = zzs
             .iter()
-            .map(|z| {
+            .map(|zz| {
                 let before = product;
-                product *= z;
+                product *= zz;
                 before
             })
             .collect();
-        let mut inverse = product.invert_vartime().expect("product of nonzero zs");
-        for (z, before) in zs.iter_mut().zip(products_before).rev() {
-            (*z, inverse) = (inverse * before, inverse * *z);
+        let mut inverse = product.invert_vartime().expect("product of nonzero zzs");
+        for (zz, before) in zzs.iter_mut().zip(products_before).rev() {
+            (*zz, inverse) = (inverse * before, inverse * *zz);
         }
 
-        let mut inverses = zs.into_iter();
+        let mut inverses = zzs.into_iter();
         accumulators
             .into_iter()
             .zip(words.chunks_exact(n))
             .map(|(acc, msg)| match acc {
                 Some(acc) => {
-                    let z_inverse = inverses.next().expect("one inverse per accumulator");
-                    CtOption::new(acc.x * z_inverse.square(), Choice::from(1))
+                    let zz_inverse = inverses.next().expect("one inverse per accumulator");
+                    CtOption::new(acc.x * zz_inverse, Choice::from(1))
                 }
                 None => self.hash_to_point(msg).map(|p| {
                     p.to_affine()
@@ -564,54 +564,58 @@ impl TableDomain {
     }
 }
 
-/// `(X, Y, Z)` for the affine `(X/Z², Y/Z³)`, never the identity
+/// `(X, Y, Z², Z³)` for the affine `(X/Z², Y/Z³)`, with `Z` nonzero.
 #[derive(Clone, Copy)]
-struct Jacobian {
+struct Xyzz {
     x: pallas::Base,
     y: pallas::Base,
-    z: pallas::Base,
+    zz: pallas::Base,
+    zzz: pallas::Base,
 }
 
-impl From<Entry> for Jacobian {
+impl From<Entry> for Xyzz {
     fn from(Entry { x, y }: Entry) -> Self {
-        Jacobian {
+        Self {
             x,
             y,
-            z: pallas::Base::ONE,
+            zz: pallas::Base::ONE,
+            zzz: pallas::Base::ONE,
         }
     }
 }
 
-impl Jacobian {
-    /// `self + addend` by madd-2007-bl (7M + 3S), `None` where x = x(addend) or x(doubled)
+impl Xyzz {
+    /// `self + addend` by [madd-2008-s] (8M + 2S, plus one M for the doubled-point check).
     ///
-    /// - `doubled` = `[2] addend`: x test = rescaled $\pm$ conditions ("Reproducing $\bot$")
-    /// - Proofs: `affine_jacobianStep`, `jacobianStep_eq_none_iff` (sinsemilla-proofs)
+    /// `doubled` is `[2] addend`. Returns `None` on the rescaled $\bot$ cases
+    /// (`self` = ±`doubled` or −`addend`) and when `self` = `addend`, since the
+    /// mixed-add formula does not handle doubling.
+    ///
+    /// [madd-2008-s]: https://www.hyperelliptic.org/EFD/g1p/auto-shortw-xyzz.html#addition-madd-2008-s
     #[inline]
     fn step(&self, addend: &Entry, doubled: &Entry) -> Option<Self> {
-        let zz = self.z.square();
-        if self.x == doubled.x * zz {
+        if self.x == doubled.x * self.zz {
             return None;
         }
-        let h = addend.x * zz - self.x;
+        let h = addend.x * self.zz - self.x;
         if bool::from(h.is_zero()) {
             return None;
         }
         let hh = h.square();
-        let i = hh.double().double();
-        let j = h * i;
-        let r = (addend.y * self.z * zz - self.y).double();
-        let v = self.x * i;
+        let j = h * hh;
+        let r = addend.y * self.zzz - self.y;
+        let v = self.x * hh;
         let x = r.square() - j - v.double();
-        let y = r * (v - x) - (self.y * j).double();
-        let z = (self.z + h).square() - zz - hh;
-        Some(Jacobian { x, y, z })
+        let y = r * (v - x) - self.y * j;
+        // Z' = Z·h is nonzero; update only its square and cube.
+        let zz = self.zz * hh;
+        let zzz = self.zzz * j;
+        Some(Self { x, y, zz, zzz })
     }
 }
 
-/// Fewest messages for lockstep (below: Jacobian accumulators faster)
-///
-/// - Merkle, one P-core, µs/hash (lockstep / Jacobian): 6 → 11.7 / 10.5, 8 → 10.1 / 10.6
+/// Minimum batch size for affine lockstep; smaller batches normalize projective
+/// accumulators once.
 const LOCKSTEP_LANES: usize = 8;
 
 /// Affine accumulator, `None` once $\bot$
@@ -762,8 +766,8 @@ mod tests {
     };
 
     use super::{
-        Entry, Jacobian, KNOWN_DOMAINS, LOCKSTEP_LANES, LONGEST_MESSAGE_WORDS, Lane, ROW_BYTES,
-        Scratch, TABLE_LIMIT, TableDomain, Tables, WEIGHTS, add_in_lockstep, evaluate, has_x_of,
+        Entry, KNOWN_DOMAINS, LOCKSTEP_LANES, LONGEST_MESSAGE_WORDS, Lane, ROW_BYTES, Scratch,
+        TABLE_LIMIT, TableDomain, Tables, WEIGHTS, Xyzz, add_in_lockstep, evaluate, has_x_of,
         tables,
     };
     use crate::{HashDomain, K, Q_PERSONALIZATION, S_PERSONALIZATION};
@@ -1205,15 +1209,15 @@ mod tests {
     /// Lane = T, −T, ±[2]T: unreachable from random messages, so reached with crafted lanes
     ///
     /// - Lockstep: exact ⊥, lane = T doubles
-    /// - Jacobian: every coincident x handed back (caller → `hash_to_point`)
+    /// - XYZZ: every coincident x handed back (caller → `hash_to_point`)
     #[test]
-    fn crafted_lanes_give_bottom_on_the_rescaled_conditions_in_both_evaluators() {
+    fn crafted_lanes_handle_rescaled_exceptional_cases() {
         let s = pallas::Point::hash_to_curve(S_PERSONALIZATION);
         let (t, other) = (s(&7u32.to_le_bytes()), s(&8u32.to_le_bytes()));
         let entry = |p: pallas::Point| Entry::from(&p.to_affine());
         let (addend, doubled) = (entry(t), entry(t.double()));
 
-        // (case, lane before, lockstep after, Jacobian after; None = ⊥ / handed back)
+        // (case, lane before, lockstep after, XYZZ after; None = ⊥ / handed back)
         let cases = [
             ("generic", Some(other), Some(other + t), Some(other + t)),
             ("lane = T", Some(t), Some(t.double()), None),
@@ -1236,28 +1240,31 @@ mod tests {
 
         add_in_lockstep(&mut lanes, &mut scratch, (&[addend], &[doubled]), |_| 0);
 
-        for ((case, before, lockstep, jacobian), lane) in cases.iter().zip(&lanes) {
+        for ((case, before, lockstep, xyzz), lane) in cases.iter().zip(&lanes) {
             let affine = |p: pallas::Point| (entry(p).x, entry(p).y);
             assert_eq!(*lane, lockstep.map(affine), "lockstep, {case}");
-            // Z = 5 (Z = 1 would not exercise X = x·Z²)
+            // A nontrivial scale exercises both cached powers of Z.
             let z = pallas::Base::from(5);
+            let zz = z.square();
+            let zzz = zz * z;
             let stepped = before.and_then(|p| {
                 let Entry { x, y } = entry(p);
-                let acc = Jacobian {
-                    x: x * z.square(),
-                    y: y * z.square() * z,
-                    z,
+                let acc = Xyzz {
+                    x: x * zz,
+                    y: y * zzz,
+                    zz,
+                    zzz,
                 };
                 acc.step(&addend, &doubled)
             });
             let stepped = stepped.map(|acc| {
-                let z_inverse = acc.z.invert().unwrap();
+                assert_eq!(acc.zz.square() * acc.zz, acc.zzz.square(), "{case}");
                 (
-                    acc.x * z_inverse.square(),
-                    acc.y * z_inverse.square() * z_inverse,
+                    acc.x * acc.zz.invert().unwrap(),
+                    acc.y * acc.zzz.invert().unwrap(),
                 )
             });
-            assert_eq!(stepped, jacobian.map(affine), "Jacobian, {case}");
+            assert_eq!(stepped, xyzz.map(affine), "XYZZ, {case}");
         }
     }
 }
