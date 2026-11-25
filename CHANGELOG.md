@@ -6,6 +6,35 @@ and this project adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+### Added
+- The `runtime-precomputation` feature, which is not enabled by default. It makes
+  `HashDomain::hash_to_point`, `HashDomain::hash`, `CommitDomain::commit` and
+  `CommitDomain::short_commit` faster for the personalizations listed below, by
+  evaluating them against lookup tables built on first use. The budget for those
+  tables is sized to the private L2 cache of the target: 4 MiB on macOS, 128 KiB
+  on Android, and 1 MiB everywhere else. Set `SINSEMILLA_TABLE_LIMIT`, in bytes,
+  at build time to change it.
+
+  Runtime precomputation supports `no_std` with `alloc` on targets with
+  pointer-sized atomics. Concurrent first calls may temporarily build multiple
+  copies of the tables; only one copy is retained.
+
+  The budget decides how long a message the tables cover, at 64 KiB per word, and
+  a message longer than that is hashed as before. Orchard hashes 51 words for
+  `CommitIvk`, 52 for a Merkle parent hash and 109 for a note commitment, so at
+  the default budgets macOS covers the first two and no target covers the note
+  commitment. To change that, set `SINSEMILLA_TABLE_LIMIT` to at least 3.31 MiB
+  for a Merkle parent hash, or 6.875 MiB for every message Orchard hashes.
+
+### Changed
+- The following set of personalizations now have internal pre-computations,
+  giving performance improvements to the `HashDomain` and `CommitDomain`
+  constructors:
+  - `z.cash:Orchard-MerkleCRH`
+  - `z.cash:Orchard-NoteCommit`
+  - `z.cash:Orchard-CommitIvk`
+- `HashDomain::hash_to_point` and `HashDomain::hash` are faster and no longer
+  allocate internally.
 
 ## [0.2.0] - 2026-09-25
 ### Added
