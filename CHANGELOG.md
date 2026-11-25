@@ -25,6 +25,14 @@ and this project adheres to Rust's notion of
   the default budgets macOS covers the first two and no target covers the note
   commitment. To change that, set `SINSEMILLA_TABLE_LIMIT` to at least 3.31 MiB
   for a Merkle parent hash, or 6.875 MiB for every message Orchard hashes.
+- `sinsemilla::HashDomain::hash_many_vartime`, which hashes many public messages
+  in one domain, in order, with the same results as `HashDomain::hash`. Each
+  message is given as `[u16; N]`, its `K`-bit words. With
+  `runtime-precomputation`, messages that the tables cover are evaluated
+  together: from 8 messages on affine accumulators, with one inversion per word
+  shared across all of them, and below that on Jacobian accumulators, with one
+  inversion shared at the end. This is variable time, so it is only for public
+  inputs such as Merkle tree nodes.
 
 ### Changed
 - The following set of personalizations now have internal pre-computations,
