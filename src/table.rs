@@ -224,6 +224,9 @@ const WEIGHTS: usize = {
 /// table at all.
 pub(crate) const LONGEST_MESSAGE_WORDS: usize = WEIGHTS.saturating_sub(1);
 
+/// Orchard MerkleCRH puts the layer index in the first word, with 32 possible tree layers.
+const ORCHARD_MERKLE_DEPTH: usize = 32;
+
 /// The personalizations that have a start table, and so can be hashed with the tables.
 ///
 /// These are the personalizations whose $\mathcal{Q}$ this crate already stores; see
@@ -315,8 +318,10 @@ fn tables() -> &'static Tables {
 /// Per known domain, at its [`KNOWN_DOMAIN_WORDS`] length `n`: $P_1$ for first word `j` =
 /// $\[2^n\] \mathcal{Q} + \[2^{n-1}\] S_j$.
 ///
-/// - Variable-time paths only, built on first use there (one 64 KiB row per domain, past the budget)
-/// - If any first word gives $\bot$, cache `None` and evaluate the first step as usual.
+/// - Variable-time paths only, built on first use, outside the generator table budget.
+/// - Orchard MerkleCRH caches only its 32 layer values (2 KiB); other domains cache all
+///   [`S_LEN`] first words (64 KiB each). Uncached words take the ordinary first step.
+/// - If any cached word would give $\bot$, store `None` and use the ordinary first step for all words.
 /// - Concurrent first uses may each build the row; one is kept (as for [`tables`])
 static FIRST_STEPS: [OnceBox<Option<Vec<Entry>>>; 3] =
     [OnceBox::new(), OnceBox::new(), OnceBox::new()];
@@ -466,23 +471,44 @@ impl TableDomain {
         if words.len() / n < LOCKSTEP_LANES {
             return self.hash_each_vartime(tables, start, first_steps, words, n);
         }
+        let mut has_uncached_first_word = false;
         let mut lanes: Vec<Lane> = match first_steps {
             Some(first) => words
                 .chunks_exact(n)
                 .map(|msg| {
-                    let Entry { x, y } = first[usize::from(msg[0])];
+                    let Entry { x, y } = match first.get(usize::from(msg[0])) {
+                        Some(&entry) => entry,
+                        None => {
+                            has_uncached_first_word = true;
+                            start
+                        }
+                    };
                     Some((x, y))
                 })
                 .collect(),
             None => vec![Some((start.x, start.y)); words.len() / n],
         };
         let mut scratch = Scratch::new(lanes.len());
+        if let Some(first) = first_steps
+            && has_uncached_first_word
+        {
+            // Cached lanes are already past word zero. Advance the other lanes to match.
+            let word = |lane| usize::from(words[lane * n]);
+            add_in_lockstep(
+                &mut lanes,
+                &mut scratch,
+                (&tables.generators[n - 1], &tables.generators[n]),
+                word,
+                |lane| word(lane) < first.len(),
+            );
+        }
         for i in usize::from(first_steps.is_some())..n {
             add_in_lockstep(
                 &mut lanes,
                 &mut scratch,
                 (&tables.generators[n - 1 - i], &tables.generators[n - i]),
                 |lane| usize::from(words[lane * n + i]),
+                |_| false,
             );
         }
 
@@ -504,10 +530,15 @@ impl TableDomain {
         debug_assert!(n > 0 && n < tables.generators.len());
         FIRST_STEPS[self.domain]
             .get_or_init(|| {
+                let entries = if KNOWN_DOMAINS[self.domain] == ORCHARD_MERKLE_CRH {
+                    ORCHARD_MERKLE_DEPTH
+                } else {
+                    S_LEN
+                };
                 Box::new(build_first_steps(
                     Entry::from(&tables.starts[self.domain][n - 1]),
-                    &tables.generators[n - 1],
-                    &tables.generators[n],
+                    &tables.generators[n - 1][..entries],
+                    &tables.generators[n][..entries],
                 ))
             })
             .as_deref()
@@ -526,12 +557,15 @@ impl TableDomain {
         words: &[u16],
         n: usize,
     ) -> Vec<CtOption<pallas::Base>> {
+        // Only MerkleCRH has a partial row. All other rows cover every valid word.
+        let is_merkle = KNOWN_DOMAINS[self.domain] == ORCHARD_MERKLE_CRH;
         let accumulators: Vec<Option<Xyzz>> = words
             .chunks_exact(n)
             .map(|msg| {
+                let word = usize::from(msg[0]);
                 let (acc, from) = match first_steps {
-                    Some(first) => (first[usize::from(msg[0])], 1),
-                    None => (start, 0),
+                    Some(row) if !is_merkle || word < ORCHARD_MERKLE_DEPTH => (row[word], 1),
+                    _ => (start, 0),
                 };
                 // position i: rows (n − 1 − i, n − i) = (addends, doubled)
                 let rows = tables.generators[..=n].windows(2).rev();
@@ -633,7 +667,7 @@ impl Xyzz {
 /// Affine accumulator, `None` once $\bot$
 type Lane = Option<(pallas::Base, pallas::Base)>;
 
-/// One word on every lane: `lane += addends[word(lane)]`
+/// One word on every live lane not selected by `skip`: `lane += addends[word(lane)]`
 ///
 /// - `(addends, doubled)`: one weight row and the row above (`doubled[j]` = `[2] addends[j]`)
 /// - $\bot$ where `lane` = $\pm$ doubled or $-$addend (rescaled conditions, "Reproducing $\bot$")
@@ -645,10 +679,14 @@ fn add_in_lockstep(
     scratch: &mut Scratch,
     (addends, doubled): (&[Entry], &[Entry]),
     word: impl Fn(usize) -> usize,
+    skip: impl Fn(usize) -> bool,
 ) {
     let mut product = pallas::Base::ONE;
     for (k, (lane, slot)) in lanes.iter_mut().zip(&mut scratch.slots).enumerate() {
         let Some((x, y)) = *lane else { continue };
+        if skip(k) {
+            continue;
+        }
         let j = word(k);
         let addend = addends[j];
         let denominator = if x == doubled[j].x {
@@ -674,8 +712,11 @@ fn add_in_lockstep(
     let mut inverse = product
         .invert_vartime()
         .expect("product of nonzero denominators");
-    for (lane, slot) in lanes.iter_mut().zip(&scratch.slots).rev() {
+    for (k, (lane, slot)) in lanes.iter_mut().zip(&scratch.slots).enumerate().rev() {
         let Some((x, y)) = *lane else { continue };
+        if skip(k) {
+            continue;
+        }
         let Slot {
             addend: Entry { x: tx, y: ty },
             denominator,
@@ -776,8 +817,8 @@ mod tests {
 
     use super::{
         Entry, KNOWN_DOMAIN_WORDS, KNOWN_DOMAINS, LOCKSTEP_LANES, LONGEST_MESSAGE_WORDS, Lane,
-        ROW_BYTES, Scratch, TABLE_LIMIT, TableDomain, Tables, WEIGHTS, Xyzz, add_in_lockstep,
-        build_first_steps, evaluate, has_x_of, tables,
+        ORCHARD_MERKLE_CRH, ORCHARD_MERKLE_DEPTH, ROW_BYTES, Scratch, TABLE_LIMIT, TableDomain,
+        Tables, WEIGHTS, Xyzz, add_in_lockstep, build_first_steps, evaluate, has_x_of, tables,
     };
     use crate::{HashDomain, K, Q_PERSONALIZATION, S_PERSONALIZATION, extract_p_bottom};
 
@@ -1182,17 +1223,25 @@ mod tests {
             let first = tabled
                 .first_steps(tables, n)
                 .expect("every first word is nonexceptional in this domain");
-            assert_eq!(first.len(), 1 << K);
+            let expected_len = if personalization == ORCHARD_MERKLE_CRH {
+                ORCHARD_MERKLE_DEPTH
+            } else {
+                1 << K
+            };
+            assert_eq!(first.len(), expected_len);
 
             let reference = HashDomain::from_Q(HashDomain::new(personalization).Q());
-            for (j, entry) in first.iter().enumerate() {
+            // Keep checking that all first words are nonexceptional, even outside the cache.
+            for j in 0..1 << K {
                 let first_word = (0..K).map(|i| j >> i & 1 == 1);
                 let point = unwrap(reference.hash_to_point(first_word));
-                assert_eq!(
-                    entry.affine().to_curve(),
-                    start(point, n - 1),
-                    "{personalization}, word {j}"
-                );
+                if let Some(entry) = first.get(j) {
+                    assert_eq!(
+                        entry.affine().to_curve(),
+                        start(point, n - 1),
+                        "{personalization}, word {j}"
+                    );
+                }
             }
         }
     }
@@ -1216,6 +1265,41 @@ mod tests {
                 build_first_steps(start, &addends, &doubled).is_none(),
                 "{relation}"
             );
+        }
+    }
+
+    #[test]
+    fn merkle_batches_accept_first_words_outside_the_cache() {
+        const N: usize = 52;
+        if N > LONGEST_MESSAGE_WORDS {
+            return;
+        }
+
+        let domain = HashDomain::new(ORCHARD_MERKLE_CRH);
+        let reference = HashDomain::from_Q(domain.Q());
+        let last_cached = (ORCHARD_MERKLE_DEPTH - 1) as u16;
+        let first_uncached = ORCHARD_MERKLE_DEPTH as u16;
+        let first_words = [last_cached, first_uncached, 0, (1 << K) - 1];
+
+        // Widths on both sides of the dispatch threshold, with mixed hits and misses.
+        for width in [LOCKSTEP_LANES - 1, LOCKSTEP_LANES] {
+            let messages: Vec<[u16; N]> = (0..width)
+                .map(|i| {
+                    let mut msg = [i as u16; N];
+                    msg[0] = first_words[i % first_words.len()];
+                    msg
+                })
+                .collect();
+            let expected: Vec<Option<pallas::Base>> = messages
+                .iter()
+                .map(|msg| Option::from(reference.hash(bits(msg).into_iter())))
+                .collect();
+            let actual: Vec<Option<pallas::Base>> = domain
+                .hash_many_vartime(&messages)
+                .into_iter()
+                .map(Option::from)
+                .collect();
+            assert_eq!(actual, expected, "{width} messages");
         }
     }
 
@@ -1292,7 +1376,13 @@ mod tests {
             .collect();
         let mut scratch = Scratch::new(lanes.len());
 
-        add_in_lockstep(&mut lanes, &mut scratch, (&[addend], &[doubled]), |_| 0);
+        add_in_lockstep(
+            &mut lanes,
+            &mut scratch,
+            (&[addend], &[doubled]),
+            |_| 0,
+            |_| false,
+        );
 
         for ((case, before, lockstep, xyzz), lane) in cases.iter().zip(&lanes) {
             let affine = |p: pallas::Point| (entry(p).x, entry(p).y);
