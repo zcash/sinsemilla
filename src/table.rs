@@ -313,36 +313,33 @@ fn tables() -> &'static Tables {
 }
 
 /// Per known domain, at its [`KNOWN_DOMAIN_WORDS`] length `n`: $P_1$ for first word `j` =
-/// $\[2^n\] \mathcal{Q} + \[2^{n-1}\] S_j$, `None` where position 0 is $\bot$
+/// $\[2^n\] \mathcal{Q} + \[2^{n-1}\] S_j$.
 ///
 /// - Variable-time paths only, built on first use there (one 64 KiB row per domain, past the budget)
+/// - If any first word gives $\bot$, cache `None` and evaluate the first step as usual.
 /// - Concurrent first uses may each build the row; one is kept (as for [`tables`])
-static FIRST_STEPS: [OnceBox<Vec<Option<Entry>>>; 3] =
+static FIRST_STEPS: [OnceBox<Option<Vec<Entry>>>; 3] =
     [OnceBox::new(), OnceBox::new(), OnceBox::new()];
 
-/// [`FIRST_STEPS`] row of domain `d` (only built once `n` is covered: [`TableDomain::first_steps`])
-///
-/// - `None` = position-0 $\bot$: `weightedHashToPoint_cons` (sinsemilla-proofs)
-fn first_steps(d: usize) -> Vec<Option<Entry>> {
-    let tables = tables();
-    let n = KNOWN_DOMAIN_WORDS[d];
-    let start = tables.starts[d][n - 1];
-    let sums: Vec<pallas::Point> = tables.generators[n - 1]
+/// Builds a row only if every first word is nonexceptional.
+fn build_first_steps(start: Entry, addends: &[Entry], doubled: &[Entry]) -> Option<Vec<Entry>> {
+    debug_assert_eq!(addends.len(), doubled.len());
+    let start_point = start.affine().to_curve();
+    let sums: Vec<pallas::Point> = addends
         .iter()
-        .map(|addend| start.to_curve() + addend.affine())
+        .map(|addend| start_point + addend.affine())
         .collect();
-    let mut affine = vec![pallas::Affine::default(); S_LEN];
+    let mut affine = vec![pallas::Affine::default(); sums.len()];
     pallas::Point::batch_normalize_vartime(&sums, &mut affine);
     // ⊥ at position 0: P_0 = ±[2] T (x test one weight up) or P_0 = −T (sum = identity)
-    let start_x = Entry::from(&start).x;
-    affine
-        .iter()
-        .zip(&tables.generators[n])
-        .map(|(sum, doubled)| {
-            let bottom = start_x == doubled.x || bool::from(sum.is_identity());
-            (!bottom).then(|| Entry::from(sum))
-        })
-        .collect()
+    let mut row = Vec::with_capacity(affine.len());
+    for (sum, doubled) in affine.iter().zip(doubled) {
+        if start.x == doubled.x || bool::from(sum.is_identity()) {
+            return None;
+        }
+        row.push(Entry::from(sum));
+    }
+    Some(row)
 }
 
 /// Generator-table entry: affine $(x, y)$ of a weighted generator (on curve, never the identity)
@@ -465,14 +462,17 @@ impl TableDomain {
 
         let tables = tables();
         let start = Entry::from(&tables.starts[self.domain][n - 1]);
-        let first_steps = self.first_steps(n);
+        let first_steps = self.first_steps(tables, n);
         if words.len() / n < LOCKSTEP_LANES {
             return self.hash_each_vartime(tables, start, first_steps, words, n);
         }
         let mut lanes: Vec<Lane> = match first_steps {
             Some(first) => words
                 .chunks_exact(n)
-                .map(|msg| first[usize::from(msg[0])].map(|Entry { x, y }| (x, y)))
+                .map(|msg| {
+                    let Entry { x, y } = first[usize::from(msg[0])];
+                    Some((x, y))
+                })
                 .collect(),
             None => vec![Some((start.x, start.y)); words.len() / n],
         };
@@ -495,11 +495,22 @@ impl TableDomain {
             .collect()
     }
 
-    /// [`FIRST_STEPS`] row for this domain, when `n` = its [`KNOWN_DOMAIN_WORDS`] length
-    fn first_steps(&self, n: usize) -> Option<&'static [Option<Entry>]> {
-        (n == KNOWN_DOMAIN_WORDS[self.domain]).then(|| {
-            &FIRST_STEPS[self.domain].get_or_init(|| Box::new(first_steps(self.domain)))[..]
-        })
+    /// [`FIRST_STEPS`] row for this domain, when `n` = its [`KNOWN_DOMAIN_WORDS`] length.
+    fn first_steps(&self, tables: &Tables, n: usize) -> Option<&'static [Entry]> {
+        if n != KNOWN_DOMAIN_WORDS[self.domain] {
+            return None;
+        }
+        // `hash_many_vartime` checks coverage before calling us.
+        debug_assert!(n > 0 && n < tables.generators.len());
+        FIRST_STEPS[self.domain]
+            .get_or_init(|| {
+                Box::new(build_first_steps(
+                    Entry::from(&tables.starts[self.domain][n - 1]),
+                    &tables.generators[n - 1],
+                    &tables.generators[n],
+                ))
+            })
+            .as_deref()
     }
 
     /// [`TableDomain::hash_many_vartime`] below [`LOCKSTEP_LANES`]: one XYZZ accumulator per
@@ -511,7 +522,7 @@ impl TableDomain {
         &self,
         tables: &Tables,
         start: Entry,
-        first_steps: Option<&[Option<Entry>]>,
+        first_steps: Option<&[Entry]>,
         words: &[u16],
         n: usize,
     ) -> Vec<CtOption<pallas::Base>> {
@@ -519,7 +530,7 @@ impl TableDomain {
             .chunks_exact(n)
             .map(|msg| {
                 let (acc, from) = match first_steps {
-                    Some(first) => (first[usize::from(msg[0])]?, 1),
+                    Some(first) => (first[usize::from(msg[0])], 1),
                     None => (start, 0),
                 };
                 // position i: rows (n − 1 − i, n − i) = (addends, doubled)
@@ -764,9 +775,9 @@ mod tests {
     use pasta_curves::{arithmetic::CurveExt, pallas};
 
     use super::{
-        Entry, KNOWN_DOMAINS, LOCKSTEP_LANES, LONGEST_MESSAGE_WORDS, Lane, ROW_BYTES, Scratch,
-        TABLE_LIMIT, TableDomain, Tables, WEIGHTS, Xyzz, add_in_lockstep, evaluate, has_x_of,
-        tables,
+        Entry, KNOWN_DOMAIN_WORDS, KNOWN_DOMAINS, LOCKSTEP_LANES, LONGEST_MESSAGE_WORDS, Lane,
+        ROW_BYTES, Scratch, TABLE_LIMIT, TableDomain, Tables, WEIGHTS, Xyzz, add_in_lockstep,
+        build_first_steps, evaluate, has_x_of, tables,
     };
     use crate::{HashDomain, K, Q_PERSONALIZATION, S_PERSONALIZATION, extract_p_bottom};
 
@@ -1157,6 +1168,54 @@ mod tests {
                     "specification: {relation} at word {i} of {n}",
                 );
             }
+        }
+    }
+
+    #[test]
+    fn first_step_rows_match_the_specification() {
+        let tables = tables();
+        for (personalization, n) in KNOWN_DOMAINS.into_iter().zip(KNOWN_DOMAIN_WORDS) {
+            if n > LONGEST_MESSAGE_WORDS {
+                continue;
+            }
+            let tabled = TableDomain::new(personalization).expect("a known domain");
+            let first = tabled
+                .first_steps(tables, n)
+                .expect("every first word is nonexceptional in this domain");
+            assert_eq!(first.len(), 1 << K);
+
+            let reference = HashDomain::from_Q(HashDomain::new(personalization).Q());
+            for (j, entry) in first.iter().enumerate() {
+                let first_word = (0..K).map(|i| j >> i & 1 == 1);
+                let point = unwrap(reference.hash_to_point(first_word));
+                assert_eq!(
+                    entry.affine().to_curve(),
+                    start(point, n - 1),
+                    "{personalization}, word {j}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn exceptional_first_word_disables_the_whole_row() {
+        let t = generator(7);
+        let other = generator(8);
+        let entry = |p: pallas::Point| Entry::from(&p.to_affine());
+        let addends = [entry(other), entry(t)];
+        let doubled = [entry(other.double()), entry(t.double())];
+
+        // An ordinary doubling in the weighted representation is not bottom.
+        let row = build_first_steps(entry(t), &addends, &doubled).unwrap();
+        assert_eq!(row[1], doubled[1]);
+
+        for (relation, q) in exceptional_accumulators(7) {
+            let start = entry(q.double());
+            assert!(build_first_steps(start, &addends[..1], &doubled[..1]).is_some());
+            assert!(
+                build_first_steps(start, &addends, &doubled).is_none(),
+                "{relation}"
+            );
         }
     }
 
