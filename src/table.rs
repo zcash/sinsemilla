@@ -116,7 +116,7 @@
 
 use alloc::{boxed::Box, vec, vec::Vec};
 
-use group::{Curve, CurveAffine as _, Group, ff::Field};
+use group::{CurveAffine as _, Group, ff::Field};
 use once_cell::race::OnceBox;
 use pasta_curves::{
     arithmetic::{CurveAffine as _, CurveExt, VartimeField},
@@ -124,7 +124,7 @@ use pasta_curves::{
 };
 use subtle::{Choice, ConstantTimeEq, CtOption};
 
-use crate::{K, Q_PERSONALIZATION, SINSEMILLA_S, known_domains};
+use crate::{K, Q_PERSONALIZATION, SINSEMILLA_S, extract_p_bottom, known_domains};
 
 /// Number of Sinsemilla generators, which is the number of entries in a table row.
 const S_LEN: usize = 1 << K;
@@ -234,6 +234,13 @@ const KNOWN_DOMAINS: [&str; 3] = [
     "z.cash:Orchard-CommitIvk-M",
 ];
 
+/// Words each of [`KNOWN_DOMAINS`] hashes (Merkle parent, note commitment, `CommitIvk`)
+const KNOWN_DOMAIN_WORDS: [usize; 3] = [52, 109, 51];
+
+/// Minimum batch size for affine lockstep; smaller batches normalize projective
+/// accumulators once.
+const LOCKSTEP_LANES: usize = 8;
+
 /// The generator table and the per-domain start points.
 struct Tables {
     /// `generators[w][j]` is $\[2^w\] S_j$.
@@ -305,9 +312,6 @@ fn tables() -> &'static Tables {
     TABLES.get_or_init(|| Box::new(Tables::build()))
 }
 
-/// Words each of [`KNOWN_DOMAINS`] hashes (Merkle parent, note commitment, `CommitIvk`)
-const KNOWN_DOMAIN_WORDS: [usize; 3] = [52, 109, 51];
-
 /// Per known domain, at its [`KNOWN_DOMAIN_WORDS`] length `n`: $P_1$ for first word `j` =
 /// $\[2^n\] \mathcal{Q} + \[2^{n-1}\] S_j$, `None` where position 0 is $\bot$
 ///
@@ -343,7 +347,9 @@ fn first_steps(d: usize) -> Vec<Option<Entry>> {
 
 /// Generator-table entry: affine $(x, y)$ of a weighted generator (on curve, never the identity)
 ///
-/// - Raw coordinates (`coordinates()` on a stored `pallas::Affine` = constant-time identity test)
+/// - This structure is identical to `pallas::Affine`, but enables direct access to the
+///   raw coordinates. This skips the identity check in `pallas::Affine::coordinates()`
+///   (as the generator entries are known to be non-identity points).
 /// - [`Entry::affine`] free (`from_xy_unchecked`; every entry pinned by
 ///   `generator_entries_are_the_weighted_generators`)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -528,6 +534,7 @@ impl TableDomain {
             })
             .collect();
 
+        // `extract_p_bottom` with batch inversion.
         // Batch-invert the nonzero Z² values directly: the affine x is X / Z².
         let mut zzs: Vec<pallas::Base> = accumulators.iter().flatten().map(|acc| acc.zz).collect();
         let mut product = pallas::Base::ONE;
@@ -553,12 +560,7 @@ impl TableDomain {
                     let zz_inverse = inverses.next().expect("one inverse per accumulator");
                     CtOption::new(acc.x * zz_inverse, Choice::from(1))
                 }
-                None => self.hash_to_point(msg).map(|p| {
-                    p.to_affine()
-                        .coordinates()
-                        .map(|c| *c.x())
-                        .unwrap_or(pallas::Base::ZERO)
-                }),
+                None => extract_p_bottom(self.hash_to_point(msg)),
             })
             .collect()
     }
@@ -594,9 +596,12 @@ impl Xyzz {
     /// [madd-2008-s]: https://www.hyperelliptic.org/EFD/g1p/auto-shortw-xyzz.html#addition-madd-2008-s
     #[inline]
     fn step(&self, addend: &Entry, doubled: &Entry) -> Option<Self> {
+        // Equivalent to `has_x_of(self, doubled)`.
         if self.x == doubled.x * self.zz {
             return None;
         }
+        // `h == 0` is equivalent to `has_x_of(self, addend)`, but caches the difference
+        // for use in the addition formula.
         let h = addend.x * self.zz - self.x;
         if bool::from(h.is_zero()) {
             return None;
@@ -613,10 +618,6 @@ impl Xyzz {
         Some(Self { x, y, zz, zzz })
     }
 }
-
-/// Minimum batch size for affine lockstep; smaller batches normalize projective
-/// accumulators once.
-const LOCKSTEP_LANES: usize = 8;
 
 /// Affine accumulator, `None` once $\bot$
 type Lane = Option<(pallas::Base, pallas::Base)>;
@@ -760,17 +761,14 @@ mod tests {
     use alloc::{vec, vec::Vec};
 
     use group::{Curve, CurveAffine as _, Group, GroupEncoding, ff::Field};
-    use pasta_curves::{
-        arithmetic::{CurveAffine as _, CurveExt},
-        pallas,
-    };
+    use pasta_curves::{arithmetic::CurveExt, pallas};
 
     use super::{
         Entry, KNOWN_DOMAINS, LOCKSTEP_LANES, LONGEST_MESSAGE_WORDS, Lane, ROW_BYTES, Scratch,
         TABLE_LIMIT, TableDomain, Tables, WEIGHTS, Xyzz, add_in_lockstep, evaluate, has_x_of,
         tables,
     };
-    use crate::{HashDomain, K, Q_PERSONALIZATION, S_PERSONALIZATION};
+    use crate::{HashDomain, K, Q_PERSONALIZATION, S_PERSONALIZATION, extract_p_bottom};
 
     /// Packs a bit string into [`K`]-bit words, zero-padding the final word exactly as the
     /// dispatch in [`crate::HashDomain`] pads it.
@@ -1187,10 +1185,7 @@ mod tests {
 
                     let expected: Vec<Option<pallas::Base>> = words
                         .chunks_exact(n)
-                        .map(|msg| {
-                            Option::from(tabled.hash_to_point(msg))
-                                .map(|p: pallas::Point| *p.to_affine().coordinates().unwrap().x())
-                        })
+                        .map(|msg| Option::from(extract_p_bottom(tabled.hash_to_point(msg))))
                         .collect();
                     let actual: Vec<Option<pallas::Base>> = tabled
                         .hash_many_vartime(&words, n)

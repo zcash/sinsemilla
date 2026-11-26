@@ -158,11 +158,8 @@ impl HashDomain {
             words[len / K] |= u16::from(bit) << (len % K);
             len += 1;
         }
-        self.hash_words(&words[..len.div_ceil(K)])
-    }
+        let words = &words[..len.div_ceil(K)];
 
-    /// [`HashDomain::hash_to_point`] over already-packed words
-    fn hash_words(&self, words: &[u16]) -> CtOption<pallas::Point> {
         #[cfg(feature = "runtime-precomputation")]
         if let Some(tabled) = self.tabled {
             if (1..=table::LONGEST_MESSAGE_WORDS).contains(&words.len()) {
@@ -213,7 +210,7 @@ impl HashDomain {
         assert!(N <= C, "message is longer than K * C bits");
         let words = messages.as_flattened();
         assert!(
-            words.iter().all(|&word| usize::from(word) < 1 << K),
+            words.iter().all(|&word| word < (1u16 << K)),
             "word is not a K-bit value"
         );
 
@@ -224,8 +221,12 @@ impl HashDomain {
             return tabled.hash_many_vartime(words, N);
         }
 
-        let points: Vec<CtOption<pallas::Point>> =
-            messages.iter().map(|msg| self.hash_words(msg)).collect();
+        let points: Vec<CtOption<pallas::Point>> = messages
+            .iter()
+            .map(|msg| self.accumulate(msg).into())
+            .collect();
+
+        // `extract_p_bottom` with batched normalization.
         let projective: Vec<pallas::Point> = points
             .iter()
             .map(|point| point.unwrap_or(pallas::Point::identity()))
