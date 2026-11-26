@@ -124,7 +124,10 @@ use pasta_curves::{
 };
 use subtle::{Choice, ConstantTimeEq, CtOption};
 
-use crate::{K, Q_PERSONALIZATION, SINSEMILLA_S, extract_p_bottom, known_domains};
+use crate::{
+    K, Q_PERSONALIZATION, SINSEMILLA_S, extract_p_bottom,
+    known_domains::{self, ORCHARD_COMMIT_IVK_M, ORCHARD_MERKLE_CRH, ORCHARD_NOTE_COMMIT_M},
+};
 
 /// Number of Sinsemilla generators, which is the number of entries in a table row.
 const S_LEN: usize = 1 << K;
@@ -226,12 +229,9 @@ pub(crate) const LONGEST_MESSAGE_WORDS: usize = WEIGHTS.saturating_sub(1);
 /// These are the personalizations whose $\mathcal{Q}$ this crate already stores; see
 /// [`crate::known_domains`] for what each one is used for and where.
 const KNOWN_DOMAINS: [&str; 3] = [
-    // A parent of the Orchard note commitment tree, hashed once per Merkle path layer.
-    "z.cash:Orchard-MerkleCRH",
-    // The Orchard note commitment, hashed once per output.
-    "z.cash:Orchard-NoteCommit-M",
-    // The commitment to (ak, nk) that derives an incoming viewing key.
-    "z.cash:Orchard-CommitIvk-M",
+    ORCHARD_MERKLE_CRH,
+    ORCHARD_NOTE_COMMIT_M,
+    ORCHARD_COMMIT_IVK_M,
 ];
 
 /// Words each of [`KNOWN_DOMAINS`] hashes (Merkle parent, note commitment, `CommitIvk`)

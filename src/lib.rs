@@ -346,6 +346,8 @@ mod tests {
 
     use super::sinsemilla_s::SINSEMILLA_S;
     use super::{C, HashDomain, IncompletePoint, K, lebs2ip_k, s_generator};
+    use crate::known_domains::ORCHARD_MERKLE_CRH;
+
     use group::{Curve, CurveAffine as _, Group};
     use pasta_curves::{
         arithmetic::{CurveAffine, CurveExt},
@@ -464,7 +466,7 @@ mod tests {
     #[test]
     fn hash_many_vartime_equals_hash_per_message() {
         let domains = [
-            ("MerkleCRH", HashDomain::new("z.cash:Orchard-MerkleCRH")),
+            ("MerkleCRH", HashDomain::new(ORCHARD_MERKLE_CRH)),
             ("untabled", HashDomain::new("z.cash:test-Sinsemilla")),
             ("Q = S_0", HashDomain::from_Q(s_generator(0).to_curve())),
             (
@@ -539,6 +541,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "word is not a K-bit value")]
     fn hash_many_vartime_refuses_a_word_past_k_bits() {
-        HashDomain::new("z.cash:Orchard-MerkleCRH").hash_many_vartime(&[[1 << K]]);
+        HashDomain::new(ORCHARD_MERKLE_CRH).hash_many_vartime(&[[1 << K]]);
     }
 }
