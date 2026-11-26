@@ -6,6 +6,8 @@ and this project adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.2.1] - 2026-11-26
 ### Added
 - `sinsemilla::HashDomain::hash_many_vartime` for public inputs.
 - Table precomputations for known personalisations (for their expected message
