@@ -6,39 +6,24 @@ and this project adheres to Rust's notion of
 [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
+
+## [0.2.1] - 2026-11-26
 ### Added
-- `sinsemilla::precompute` initializes runtime tables and covered batch first-step
-  rows before the first hash.
-- The `merkle-table` feature guarantees table coverage of the 52-word Orchard
-  Merkle hash, even with a smaller target default or `SINSEMILLA_TABLE_LIMIT`.
-- `HashDomain::precomputed_message_words` reports initialized table coverage for
-  callers using `test-dependencies`.
-- The `runtime-precomputation` feature, which is not enabled by default. It makes
-  `HashDomain::hash_to_point`, `HashDomain::hash`, `CommitDomain::commit` and
-  `CommitDomain::short_commit` faster for the personalizations listed below, by
-  evaluating them against lookup tables built on first use. The budget for those
-  tables is sized to the private L2 cache of the target: 4 MiB on macOS, 128 KiB
-  on Android, and 1 MiB everywhere else. Set `SINSEMILLA_TABLE_LIMIT`, in bytes,
-  at build time to change it.
-
-  Runtime precomputation supports `no_std` with `alloc` on targets with
-  pointer-sized atomics. Concurrent first calls may temporarily build multiple
-  copies of the tables; only one copy is retained.
-
-  The budget decides how long a message the tables cover, at 64 KiB per word, and
-  a message longer than that is hashed as before. Orchard hashes 51 words for
-  `CommitIvk`, 52 for a Merkle parent hash and 109 for a note commitment, so at
-  the default budgets macOS covers the first two and no target covers the note
-  commitment. To change that, set `SINSEMILLA_TABLE_LIMIT` to at least 3.31 MiB
-  for a Merkle parent hash, or 6.875 MiB for every message Orchard hashes.
-- `sinsemilla::HashDomain::hash_many_vartime`, which hashes many public messages
-  in one domain, in order, with the same results as `HashDomain::hash`. Each
-  message is given as `[u16; N]`, its `K`-bit words. With
-  `runtime-precomputation`, messages that the tables cover are evaluated
-  together: from 11 messages on affine accumulators, with one inversion per word
-  shared across all of them, and below that on projective (XYZZ) accumulators,
-  with one inversion shared at the end. This is variable time, so it is only
-  for public inputs such as Merkle tree nodes.
+- `sinsemilla::HashDomain::hash_many_vartime` for public inputs.
+- Table precomputations for known personalisations (for their expected message
+  lengths), behind the new `precompute-tables` feature flag. It supports
+  `no_std` with `alloc` on targets with pointer-sized atomics. It adds the
+  following new APIs:
+  - `sinsemilla::precompute`
+  - `sinsemilla::HashDomain::precomputed_message_words`, behind the
+    `test-dependencies` feature flag.
+  - The generator table's default size is 4 MiB on macOS, 128 KiB on Android,
+    and 1 MiB everywhere else. Set `SINSEMILLA_TABLE_LIMIT`, in bytes, at build
+    time to change it. Once initialized, the additional per-known-domain tables
+    add up to about 2.3% of the generator table's size.
+- The new `merkle-table` feature enables `precompute-tables` and guarantees
+  table coverage of the 52-word Orchard Merkle hash, even with a smaller target
+  default or `SINSEMILLA_TABLE_LIMIT`.
 
 ### Changed
 - The following set of personalizations now have internal pre-computations,
@@ -48,7 +33,9 @@ and this project adheres to Rust's notion of
   - `z.cash:Orchard-NoteCommit`
   - `z.cash:Orchard-CommitIvk`
 - `HashDomain::hash_to_point` and `HashDomain::hash` are faster and no longer
-  allocate internally.
+  allocate internally. With `precompute-tables`, the first eligible hash may
+  still allocate to initialize tables; use `sinsemilla::precompute` to control
+  when that happens.
 
 ## [0.2.0] - 2026-09-25
 ### Added

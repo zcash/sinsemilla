@@ -7,7 +7,7 @@
 #[macro_use]
 extern crate alloc;
 
-#[cfg(feature = "std")]
+#[cfg(all(test, feature = "std"))]
 extern crate std;
 
 use alloc::vec::Vec;
@@ -23,11 +23,11 @@ mod addition;
 use self::addition::IncompletePoint;
 mod known_domains;
 mod sinsemilla_s;
-#[cfg(feature = "runtime-precomputation")]
+#[cfg(feature = "precompute-tables")]
 mod table;
 pub use sinsemilla_s::SINSEMILLA_S;
-#[cfg(feature = "runtime-precomputation")]
-#[cfg_attr(docsrs, doc(cfg(feature = "runtime-precomputation")))]
+#[cfg(feature = "precompute-tables")]
+#[cfg_attr(docsrs, doc(cfg(feature = "precompute-tables")))]
 pub use table::precompute;
 
 /// Number of bits of each message piece in $\mathsf{SinsemillaHashToPoint}$
@@ -112,7 +112,7 @@ pub struct HashDomain {
     /// `None` for every other personalization, and for a domain built with
     /// [`HashDomain::from_Q`] from a bare $\mathcal{Q}$, which has no personalization to
     /// look up. Those evaluate the specification's recurrence directly.
-    #[cfg(feature = "runtime-precomputation")]
+    #[cfg(feature = "precompute-tables")]
     tabled: Option<table::TableDomain>,
 }
 
@@ -123,7 +123,7 @@ impl HashDomain {
             Q: known_domains::q(domain).unwrap_or_else(|| {
                 pallas::Point::hash_to_curve(Q_PERSONALIZATION)(domain.as_bytes())
             }),
-            #[cfg(feature = "runtime-precomputation")]
+            #[cfg(feature = "precompute-tables")]
             tabled: table::TableDomain::new(domain),
         }
     }
@@ -163,7 +163,7 @@ impl HashDomain {
         }
         let words = &words[..len.div_ceil(K)];
 
-        #[cfg(feature = "runtime-precomputation")]
+        #[cfg(feature = "precompute-tables")]
         if let Some(tabled) = self.tabled {
             if (1..=table::LONGEST_MESSAGE_WORDS).contains(&words.len()) {
                 return tabled.hash_to_point(words);
@@ -217,7 +217,7 @@ impl HashDomain {
             "word is not a K-bit value"
         );
 
-        #[cfg(feature = "runtime-precomputation")]
+        #[cfg(feature = "precompute-tables")]
         if let Some(tabled) = self.tabled
             && (1..=table::LONGEST_MESSAGE_WORDS).contains(&N)
         {
@@ -251,12 +251,12 @@ impl HashDomain {
     /// Domains without runtime tables, including those built with [`Self::from_Q`],
     /// always report zero. This inspection API is only available for testing.
     #[cfg(all(
-        feature = "runtime-precomputation",
+        feature = "precompute-tables",
         any(test, feature = "test-dependencies")
     ))]
     #[cfg_attr(
         docsrs,
-        doc(cfg(all(feature = "runtime-precomputation", feature = "test-dependencies")))
+        doc(cfg(all(feature = "precompute-tables", feature = "test-dependencies")))
     )]
     pub fn precomputed_message_words(&self) -> usize {
         self.tabled
@@ -273,7 +273,7 @@ impl HashDomain {
         HashDomain {
             Q,
             // A bare Q has no personalization, so it never takes the table path.
-            #[cfg(feature = "runtime-precomputation")]
+            #[cfg(feature = "precompute-tables")]
             tabled: None,
         }
     }

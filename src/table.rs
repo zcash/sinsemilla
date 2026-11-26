@@ -108,7 +108,7 @@
 //! benchmarks measure both; see `benches/sinsemilla.rs`.
 //!
 //! This module needs `alloc` and pointer-sized atomics, but not `std`. Enable it with
-//! the `runtime-precomputation` feature.
+//! the `precompute-tables` feature.
 //!
 //! [`C`]: crate::C
 //! [`HashDomain`]: crate::HashDomain
@@ -333,7 +333,7 @@ fn tables() -> &'static Tables {
 /// cost out of the first scalar or batch hash. Calls share the same lazy initializers
 /// as hashing and return only after construction completes. Later calls do not rebuild.
 /// If the configured budget covers no messages, this does nothing.
-#[cfg(feature = "runtime-precomputation")]
+#[cfg(feature = "precompute-tables")]
 pub fn precompute() {
     if LONGEST_MESSAGE_WORDS > 0 {
         let tables = tables();
@@ -347,7 +347,7 @@ pub fn precompute() {
 
 /// Returns the covered message length after table construction, or zero before it.
 #[cfg(all(
-    feature = "runtime-precomputation",
+    feature = "precompute-tables",
     any(test, feature = "test-dependencies")
 ))]
 pub(crate) fn precomputed_message_words() -> usize {

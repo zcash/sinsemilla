@@ -19,8 +19,8 @@ const NOTE_COMMIT_BITS: usize = 256 + 256 + 64 + 255 + 255;
 /// Length in bits of an Orchard `CommitIvk` message: `ak` and `nk`, each `L_ORCHARD_BASE`.
 ///
 /// Only the table benchmarks hash at this length, and they need the
-/// `runtime-precomputation` feature.
-#[cfg(feature = "runtime-precomputation")]
+/// `precompute-tables` feature.
+#[cfg(feature = "precompute-tables")]
 const COMMIT_IVK_BITS: usize = 255 + 255;
 
 /// Smallest `SINSEMILLA_TABLE_LIMIT`, in bytes, whose tables cover every message the
@@ -28,7 +28,7 @@ const COMMIT_IVK_BITS: usize = 255 + 255;
 ///
 /// No default budget reaches it, so below it the longer messages would be hashed with the
 /// generic evaluator on both sides while still reported under the `table` label.
-#[cfg(feature = "runtime-precomputation")]
+#[cfg(feature = "precompute-tables")]
 const FULL_TABLE_LIMIT: usize = 110 << 16;
 
 /// Number of messages in the batched benchmark.
@@ -142,9 +142,9 @@ fn commit(c: &mut Criterion) {
 /// Runs only when the crate is built with at least [`FULL_TABLE_LIMIT`]:
 ///
 /// ```text
-/// SINSEMILLA_TABLE_LIMIT=7208960 cargo bench --features runtime-precomputation -- table
+/// SINSEMILLA_TABLE_LIMIT=7208960 cargo bench --features precompute-tables -- table
 /// ```
-#[cfg(feature = "runtime-precomputation")]
+#[cfg(feature = "precompute-tables")]
 fn table(c: &mut Criterion) {
     let limit = option_env!("SINSEMILLA_TABLE_LIMIT").and_then(|limit| limit.parse().ok());
     if limit.is_none_or(|limit: usize| limit < FULL_TABLE_LIMIT) {
@@ -221,8 +221,8 @@ fn hash_many(c: &mut Criterion) {
     group.finish();
 }
 
-#[cfg(feature = "runtime-precomputation")]
+#[cfg(feature = "precompute-tables")]
 criterion_group!(benches, hash, hash_batch, hash_many, domain, commit, table);
-#[cfg(not(feature = "runtime-precomputation"))]
+#[cfg(not(feature = "precompute-tables"))]
 criterion_group!(benches, hash, hash_batch, hash_many, domain, commit);
 criterion_main!(benches);
