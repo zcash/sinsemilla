@@ -23,7 +23,7 @@ jobs:
         features:
           - --no-default-features
           - --features=std
-          - --features=runtime-precomputation
+          - --features=precompute-tables
           - --features=test-dependencies
           - --all-features
     timeout-minutes: 30

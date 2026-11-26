@@ -28,7 +28,7 @@ jobs:
         features:
           - --no-default-features
           - --features=std
-          - --features=runtime-precomputation
+          - --features=precompute-tables
           - --features=test-dependencies
           - --all-features
     steps:
@@ -103,7 +103,7 @@ jobs:
         features: [--no-default-features]
         include:
           - target: thumbv7em-none-eabihf
-            features: --features=runtime-precomputation
+            features: --features=precompute-tables
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

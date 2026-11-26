@@ -13,7 +13,7 @@ and this project adheres to Rust's notion of
   Merkle hash, even with a smaller target default or `SINSEMILLA_TABLE_LIMIT`.
 - `HashDomain::precomputed_message_words` reports initialized table coverage for
   callers using `test-dependencies`.
-- The `runtime-precomputation` feature, which is not enabled by default. It makes
+- The `precompute-tables` feature, which is not enabled by default. It makes
   `HashDomain::hash_to_point`, `HashDomain::hash`, `CommitDomain::commit` and
   `CommitDomain::short_commit` faster for the personalizations listed below, by
   evaluating them against lookup tables built on first use. The budget for those
@@ -34,7 +34,7 @@ and this project adheres to Rust's notion of
 - `sinsemilla::HashDomain::hash_many_vartime`, which hashes many public messages
   in one domain, in order, with the same results as `HashDomain::hash`. Each
   message is given as `[u16; N]`, its `K`-bit words. With
-  `runtime-precomputation`, messages that the tables cover are evaluated
+  `precompute-tables`, messages that the tables cover are evaluated
   together: from 11 messages on affine accumulators, with one inversion per word
   shared across all of them, and below that on projective (XYZZ) accumulators,
   with one inversion shared at the end. This is variable time, so it is only

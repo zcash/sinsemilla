@@ -30,9 +30,9 @@ rand = "0.10"
 
 [features]
 std = []
-runtime-precomputation = ["dep:once_cell"]
+precompute-tables = ["dep:once_cell"]
 # Guarantee coverage of the Orchard Merkle hash, including its exceptional-case checks.
-merkle-table = ["runtime-precomputation"]
+merkle-table = ["precompute-tables"]
 test-dependencies = []
 
 [[bench]]
