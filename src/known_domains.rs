@@ -14,6 +14,15 @@
 use group::CurveAffine as _;
 use pasta_curves::pallas;
 
+/// Personalization for a parent of the Orchard note commitment tree.
+pub(crate) const ORCHARD_MERKLE_CRH: &str = "z.cash:Orchard-MerkleCRH";
+
+/// Personalization for the Orchard note commitment, hashed once per output.
+pub(crate) const ORCHARD_NOTE_COMMIT_M: &str = "z.cash:Orchard-NoteCommit-M";
+
+/// Personalization for the commitment to (ak, nk) that derives an incoming viewing key.
+pub(crate) const ORCHARD_COMMIT_IVK_M: &str = "z.cash:Orchard-CommitIvk-M";
+
 /// A personalization and its point.
 ///
 /// The points are built with `from_xy_unchecked`, so a lookup does not re-check that
@@ -33,7 +42,7 @@ static Q: [Entry; 3] = [
         // MerkleCRH^Orchard, in `zcash/orchard` `src/tree.rs`: hashes one parent of the
         // note commitment tree, so a spend walks it once per layer of its Merkle path,
         // and a node adds every output of every block to it.
-        "z.cash:Orchard-MerkleCRH",
+        ORCHARD_MERKLE_CRH,
         pallas::Affine::from_xy_unchecked(
             pallas::Base::from_raw([
                 0xf8b9_c7f9_7f29_c6a0,
@@ -53,7 +62,7 @@ static Q: [Entry; 3] = [
         // NoteCommit^Orchard, in `zcash/orchard` `src/note/commitment.rs`: commits to
         // (g_d, pk_d, v, rho, psi), giving the note commitment that becomes the leaf the
         // domain above hashes into the tree.
-        "z.cash:Orchard-NoteCommit-M",
+        ORCHARD_NOTE_COMMIT_M,
         pallas::Affine::from_xy_unchecked(
             pallas::Base::from_raw([
                 0x320e_ba09_40a8_745d,
@@ -73,7 +82,7 @@ static Q: [Entry; 3] = [
         // CommitIvk^Orchard, in `zcash/orchard` `src/spec.rs`: commits to (ak, nk) to
         // derive the incoming viewing key, so it runs in key derivation rather than per
         // note or per block.
-        "z.cash:Orchard-CommitIvk-M",
+        ORCHARD_COMMIT_IVK_M,
         pallas::Affine::from_xy_unchecked(
             pallas::Base::from_raw([
                 0x6bcb_2f92_790f_82f2,

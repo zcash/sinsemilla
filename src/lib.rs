@@ -26,6 +26,9 @@ mod sinsemilla_s;
 #[cfg(feature = "runtime-precomputation")]
 mod table;
 pub use sinsemilla_s::SINSEMILLA_S;
+#[cfg(feature = "runtime-precomputation")]
+#[cfg_attr(docsrs, doc(cfg(feature = "runtime-precomputation")))]
+pub use table::precompute;
 
 /// Number of bits of each message piece in $\mathsf{SinsemillaHashToPoint}$
 pub const K: usize = 10;
@@ -158,11 +161,8 @@ impl HashDomain {
             words[len / K] |= u16::from(bit) << (len % K);
             len += 1;
         }
-        self.hash_words(&words[..len.div_ceil(K)])
-    }
+        let words = &words[..len.div_ceil(K)];
 
-    /// [`HashDomain::hash_to_point`] over already-packed words
-    fn hash_words(&self, words: &[u16]) -> CtOption<pallas::Point> {
         #[cfg(feature = "runtime-precomputation")]
         if let Some(tabled) = self.tabled {
             if (1..=table::LONGEST_MESSAGE_WORDS).contains(&words.len()) {
@@ -198,10 +198,9 @@ impl HashDomain {
     /// - Word `i` = [`lebs2ip_k`] of message bits `K·i .. K·(i+1)` (final word zero-padded, as
     ///   the specification pads)
     /// - Variable time: public inputs only, such as Merkle tree nodes
-    /// - $\bot$ on exactly the specification's inputs (tabled paths proved in sinsemilla-proofs,
-    ///   `weightedHashToPoint_eq_hashToPoint`; the fallback is [`HashDomain::hash_to_point`])
+    /// - $\bot$ on exactly the same inputs as [`HashDomain::hash_to_point`]
     /// - Messages the tables cover: affine accumulators stepped together (one shared inversion
-    ///   per word), or Jacobian ones below a lockstep's worth of messages
+    ///   per word), or projective accumulators with one shared final inversion for smaller batches
     /// - Otherwise: [`HashDomain::hash_to_point`] per message, one shared inversion
     ///
     /// # Panics
@@ -214,7 +213,7 @@ impl HashDomain {
         assert!(N <= C, "message is longer than K * C bits");
         let words = messages.as_flattened();
         assert!(
-            words.iter().all(|&word| usize::from(word) < 1 << K),
+            words.iter().all(|&word| word < (1u16 << K)),
             "word is not a K-bit value"
         );
 
@@ -225,8 +224,12 @@ impl HashDomain {
             return tabled.hash_many_vartime(words, N);
         }
 
-        let points: Vec<CtOption<pallas::Point>> =
-            messages.iter().map(|msg| self.hash_words(msg)).collect();
+        let points: Vec<CtOption<pallas::Point>> = messages
+            .iter()
+            .map(|msg| self.accumulate(msg).into())
+            .collect();
+
+        // `extract_p_bottom` with batched normalization.
         let projective: Vec<pallas::Point> = points
             .iter()
             .map(|point| point.unwrap_or(pallas::Point::identity()))
@@ -241,6 +244,23 @@ impl HashDomain {
                 CtOption::new(x.unwrap_or_else(pallas::Base::zero), point.is_some())
             })
             .collect()
+    }
+
+    /// Returns this domain's table coverage in words, or zero before initialization.
+    ///
+    /// Domains without runtime tables, including those built with [`Self::from_Q`],
+    /// always report zero. This inspection API is only available for testing.
+    #[cfg(all(
+        feature = "runtime-precomputation",
+        any(test, feature = "test-dependencies")
+    ))]
+    #[cfg_attr(
+        docsrs,
+        doc(cfg(all(feature = "runtime-precomputation", feature = "test-dependencies")))
+    )]
+    pub fn precomputed_message_words(&self) -> usize {
+        self.tabled
+            .map_or(0, |_| table::precomputed_message_words())
     }
 
     /// Constructs a new `HashDomain` from a given `Q`.
@@ -346,6 +366,8 @@ mod tests {
 
     use super::sinsemilla_s::SINSEMILLA_S;
     use super::{C, HashDomain, IncompletePoint, K, lebs2ip_k, s_generator};
+    use crate::known_domains::ORCHARD_MERKLE_CRH;
+
     use group::{Curve, CurveAffine as _, Group};
     use pasta_curves::{
         arithmetic::{CurveAffine, CurveExt},
@@ -460,11 +482,11 @@ mod tests {
         }
     }
 
-    /// Lockstep, Jacobian (tabled, by width) and per-message fallback alike, vs `hash` on the bits
+    /// Lockstep, XYZZ, and the per-message fallback, vs `hash` on the bits
     #[test]
     fn hash_many_vartime_equals_hash_per_message() {
         let domains = [
-            ("MerkleCRH", HashDomain::new("z.cash:Orchard-MerkleCRH")),
+            ("MerkleCRH", HashDomain::new(ORCHARD_MERKLE_CRH)),
             ("untabled", HashDomain::new("z.cash:test-Sinsemilla")),
             ("Q = S_0", HashDomain::from_Q(s_generator(0).to_curve())),
             (
@@ -489,8 +511,8 @@ mod tests {
         };
 
         for (name, domain) in &domains {
-            // 8 = `table::LOCKSTEP_LANES` (Jacobian below, lockstep from, given a 52-word budget)
-            for count in [0, 1, 7, 8, 65] {
+            // At a budget covering 52 words, 10 and 11 straddle the affine lockstep threshold.
+            for count in [0, 1, 10, 11, 65] {
                 let msgs = &merkle[..count];
                 let expected: Vec<Option<pallas::Base>> = msgs
                     .iter()
@@ -539,6 +561,6 @@ mod tests {
     #[test]
     #[should_panic(expected = "word is not a K-bit value")]
     fn hash_many_vartime_refuses_a_word_past_k_bits() {
-        HashDomain::new("z.cash:Orchard-MerkleCRH").hash_many_vartime(&[[1 << K]]);
+        HashDomain::new(ORCHARD_MERKLE_CRH).hash_many_vartime(&[[1 << K]]);
     }
 }

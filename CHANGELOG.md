@@ -7,6 +7,12 @@ and this project adheres to Rust's notion of
 
 ## [Unreleased]
 ### Added
+- `sinsemilla::precompute` initializes runtime tables and covered batch first-step
+  rows before the first hash.
+- The `merkle-table` feature guarantees table coverage of the 52-word Orchard
+  Merkle hash, even with a smaller target default or `SINSEMILLA_TABLE_LIMIT`.
+- `HashDomain::precomputed_message_words` reports initialized table coverage for
+  callers using `test-dependencies`.
 - The `runtime-precomputation` feature, which is not enabled by default. It makes
   `HashDomain::hash_to_point`, `HashDomain::hash`, `CommitDomain::commit` and
   `CommitDomain::short_commit` faster for the personalizations listed below, by
@@ -29,10 +35,10 @@ and this project adheres to Rust's notion of
   in one domain, in order, with the same results as `HashDomain::hash`. Each
   message is given as `[u16; N]`, its `K`-bit words. With
   `runtime-precomputation`, messages that the tables cover are evaluated
-  together: from 8 messages on affine accumulators, with one inversion per word
-  shared across all of them, and below that on Jacobian accumulators, with one
-  inversion shared at the end. This is variable time, so it is only for public
-  inputs such as Merkle tree nodes.
+  together: from 11 messages on affine accumulators, with one inversion per word
+  shared across all of them, and below that on projective (XYZZ) accumulators,
+  with one inversion shared at the end. This is variable time, so it is only
+  for public inputs such as Merkle tree nodes.
 
 ### Changed
 - The following set of personalizations now have internal pre-computations,
