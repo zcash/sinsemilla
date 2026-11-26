@@ -491,8 +491,8 @@ mod tests {
         };
 
         for (name, domain) in &domains {
-            // At a budget covering 52 words, 7 and 8 straddle the affine lockstep threshold.
-            for count in [0, 1, 7, 8, 65] {
+            // At a budget covering 52 words, 10 and 11 straddle the affine lockstep threshold.
+            for count in [0, 1, 10, 11, 65] {
                 let msgs = &merkle[..count];
                 let expected: Vec<Option<pallas::Base>> = msgs
                     .iter()

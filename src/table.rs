@@ -242,7 +242,7 @@ const KNOWN_DOMAIN_WORDS: [usize; 3] = [52, 109, 51];
 
 /// Minimum batch size for affine lockstep; smaller batches normalize projective
 /// accumulators once.
-const LOCKSTEP_LANES: usize = 8;
+const LOCKSTEP_LANES: usize = 11;
 
 /// The generator table and the per-domain start points.
 struct Tables {

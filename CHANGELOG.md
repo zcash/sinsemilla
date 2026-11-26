@@ -29,7 +29,7 @@ and this project adheres to Rust's notion of
   in one domain, in order, with the same results as `HashDomain::hash`. Each
   message is given as `[u16; N]`, its `K`-bit words. With
   `runtime-precomputation`, messages that the tables cover are evaluated
-  together: from 8 messages on affine accumulators, with one inversion per word
+  together: from 11 messages on affine accumulators, with one inversion per word
   shared across all of them, and below that on projective (XYZZ) accumulators,
   with one inversion shared at the end. This is variable time, so it is only
   for public inputs such as Merkle tree nodes.
